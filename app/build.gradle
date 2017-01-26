@@ -1,0 +1,80 @@
+apply plugin: 'com.android.application'
+
+task generateProtobufs { task ->
+    def protocExecutable = '/usr/local/bin/protoc' // This should be your protoc binary
+    println "[$task.name] Generating Caffe2 protobufs..."
+
+    FileTree tree = fileTree(dir: 'libs/caffe2', include: "**/*.proto", exclude: "**/third_party/**")
+    tree.each {File file ->
+        println file.parent
+        exec {
+            executable protocExecutable
+            args "-I=$file.parent"
+            args "--cpp_out=$file.parent"
+            args "$file"
+        }
+    }
+}
+
+android {
+    compileSdkVersion 25
+    buildToolsVersion "25.0.2"
+    defaultConfig {
+        applicationId "com.example.aicamera"
+        minSdkVersion 21
+        targetSdkVersion 25
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++11"
+                cppFlags "-frtti"
+                cppFlags "-fexceptions"
+                cppFlags "-Wno-error"
+                arguments "-DPROTOBUF_PROTOC_EXECUTABLE=/usr/local/bin/protoc"
+                arguments "-DRUN_HAVE_POSIX_REGEX=0",
+                        "-DUSE_THREADS=OFF",
+                        "-DRUN_HAVE_STEADY_CLOCK=0",
+                        "-DBUILD_TEST=OFF",
+                        "-DUSE_LMDB=OFF",
+                        "-DUSE_LEVELDB=OFF",
+                        "-DBUILD_PYTHON=OFF",
+                        "-DUSE_MPI=OFF",
+                        "-DCMAKE_VERBOSE_MAKEFILE=1"
+            }
+        }
+        ndk {
+            abiFilters 'armeabi-v7a'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+        }
+    }
+}
+
+android {
+    lintOptions {
+        abortOnError false
+    }
+}
+
+build.dependsOn generateProtobufs
+
+dependencies {
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+    androidTestCompile('com.android.support.test.espresso:espresso-core:2.2.2', {
+        exclude group: 'com.android.support', module: 'support-annotations'
+    })
+    compile 'com.android.support:appcompat-v7:25.1.0'
+    testCompile 'junit:junit:4.12'
+    compile 'com.google.android.gms:play-services-appindexing:8.4.0'
+}
