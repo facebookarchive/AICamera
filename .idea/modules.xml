@@ -4,7 +4,6 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/AICamera.iml" filepath="$PROJECT_DIR$/AICamera.iml" />
       <module fileurl="file://$PROJECT_DIR$/app/app.iml" filepath="$PROJECT_DIR$/app/app.iml" />
-      <module fileurl="file://$PROJECT_DIR$/caffe2/caffe2.iml" filepath="$PROJECT_DIR$/caffe2/caffe2.iml" />
     </modules>
   </component>
 </project>

@@ -1,7 +1,14 @@
 apply plugin: 'com.android.application'
 
-task generateProtobufs { task ->
-    def protocExecutable = '/usr/local/bin/protoc' // This should be your protoc binary
+def protocExecutable = "$projectDir/libs/caffe2/build_host_protoc/bin/protoc"
+
+task buildProtoc { task ->
+    exec {
+        executable "$projectDir/libs/caffe2/scripts/build_host_protoc.sh"
+    }
+}
+
+task generateProtobufs(dependsOn: 'buildProtoc') { task ->
     println "[$task.name] Generating Caffe2 protobufs..."
 
     FileTree tree = fileTree(dir: 'libs/caffe2', include: "**/*.proto", exclude: "**/third_party/**")
@@ -32,7 +39,7 @@ android {
                 cppFlags "-frtti"
                 cppFlags "-fexceptions"
                 cppFlags "-Wno-error"
-                arguments "-DPROTOBUF_PROTOC_EXECUTABLE=/usr/local/bin/protoc"
+                arguments "-DPROTOBUF_PROTOC_EXECUTABLE=$protocExecutable"
                 arguments "-DRUN_HAVE_POSIX_REGEX=0",
                         "-DUSE_THREADS=OFF",
                         "-DRUN_HAVE_STEADY_CLOCK=0",
