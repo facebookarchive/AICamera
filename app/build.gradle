@@ -3,8 +3,11 @@ apply plugin: 'com.android.application'
 def protocExecutable = "$projectDir/libs/caffe2/build_host_protoc/bin/protoc"
 
 task buildProtoc { task ->
-    exec {
-        executable "$projectDir/libs/caffe2/scripts/build_host_protoc.sh"
+    def proto = new File(protocExecutable)
+    if ( !proto.exists() ) {
+        exec {
+            executable "$projectDir/libs/caffe2/scripts/build_host_protoc.sh"
+        }
     }
 }
 
@@ -39,11 +42,14 @@ android {
                 cppFlags "-frtti"
                 cppFlags "-fexceptions"
                 cppFlags "-Wno-error"
+                cppFlags "-mfpu=neon"
+                cppFlags "-mfloat-abi=softfp"
                 arguments "-DPROTOBUF_PROTOC_EXECUTABLE=$protocExecutable"
                 arguments "-DRUN_HAVE_POSIX_REGEX=0",
                         "-DUSE_THREADS=OFF",
                         "-DRUN_HAVE_STEADY_CLOCK=0",
                         "-DBUILD_TEST=OFF",
+                        "-DANDROID_ABI=armeabi-v7a with NEON",
                         "-DUSE_LMDB=OFF",
                         "-DUSE_LEVELDB=OFF",
                         "-DBUILD_PYTHON=OFF",
@@ -74,8 +80,6 @@ android {
     }
 }
 
-build.dependsOn generateProtobufs
-
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
     androidTestCompile('com.android.support.test.espresso:espresso-core:2.2.2', {
@@ -84,4 +88,5 @@ dependencies {
     compile 'com.android.support:appcompat-v7:25.1.0'
     testCompile 'junit:junit:4.12'
     compile 'com.google.android.gms:play-services-appindexing:8.4.0'
+    generateProtobufs
 }

@@ -4,9 +4,10 @@
 #include <fstream>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
-#include <android/log.h>
 #include <android/bitmap.h>
 #include "caffe2/core/predictor.h"
+#include "caffe2/utils/proto_utils.h"
+#include "classes.h"
 
 static caffe2::NetDef _initNet, _predictNet;
 static caffe2::Predictor *_predictor;
@@ -50,7 +51,7 @@ void loadToNetDef(AAssetManager* mgr, caffe2::NetDef* net, const char *filename)
     assert(data != nullptr);
     off_t len = AAsset_getLength(asset);
     assert(len != 0);
-    net->ParseFromArray(data, len);
+    CAFFE_ENFORCE(net->ParseFromArray(data, len));
     AAsset_close(asset);
 }
 
@@ -61,13 +62,15 @@ Java_com_example_aicamera_MainActivity_setUpNets(
         jobject /* this */,
         jobject assetManager) {
     AAssetManager *mgr = AAssetManager_fromJava(env, assetManager);
-    loadToNetDef(mgr, &_initNet,   "init_net.pb");
-    loadToNetDef(mgr, &_predictNet,"predict_net.pb");
+    loadToNetDef(mgr, &_initNet,   "squeeze_init_net.pb");
+    loadToNetDef(mgr, &_predictNet,"squeeze_predict_net.pb");
     _predictNet.set_name("PredictNet"); // We need to ensure a name is set to run.
     _predictor = new caffe2::Predictor(_initNet, _predictNet);
+
 }
 
-static bool busyWithInference;
+static bool busyWithInference = false;
+static std::string outStr = "NN loading...";
 
 extern "C"
 jstring
@@ -79,8 +82,6 @@ Java_com_example_aicamera_MainActivity_classificationFromImage(
         jint height) {
     caffe2::Predictor::TensorVector output_vec;
 
-    std::string outStr = "thinking...";
-
     if (busyWithInference) {
         return env->NewStringUTF(outStr.c_str());
     } else {
@@ -88,35 +89,67 @@ Java_com_example_aicamera_MainActivity_classificationFromImage(
     }
 
     BitmapPixelsLock bmpl = BitmapPixelsLock(env, bitmap);
+    uint8_t *pixels = bmpl.getPixelsPtr();
 
-    if (_predictor) {
+    if (_predictor && pixels) {
         caffe2::TensorCPU input;
 
-        const int predHeight = 244;
-        const int predWidth = 244;
-        std::vector<float> inputPlanar(3 * predHeight * predWidth);
-        auto _i = 0, _j = 0;
-        for (auto i = 0; i < predHeight; i += height / predHeight) {
-            _i++;
-            for (auto j = 0; j < predWidth; j += width / predWidth) {
-                _j++;
-                inputPlanar[_i * predWidth + _j + 0] = (float) bmpl.getPixelsPtr()[i * width + j + 0];
-                inputPlanar[_i * predWidth + _j + 1] = (float) bmpl.getPixelsPtr()[i * width + j + 1];
-                inputPlanar[_i * predWidth + _j + 2] = (float) bmpl.getPixelsPtr()[i * width + j + 2];
+        // Reasonable dimensions to feed the predictor.
+        const int predHeight = 128;
+        const int predWidth = 128;
+        const int crops = 1;
+        const int channels = 3;
+        const int size = predHeight * predWidth;
+        const float hscale = ((float)height) / predHeight;
+        const float wscale = ((float)width) / predWidth;
+        const float scale = std::min(hscale, wscale);
+        std::vector<float> inputPlanar(crops * channels * predHeight * predWidth);
+        // Scale down the input to a reasonable predictor size.
+        for (auto i = 0; i < predHeight; ++i) {
+            const int _i = (int) (scale * i);
+            for (auto j = 0; j < predWidth; ++j) {
+                const int _j = (int) (scale * j);
+                // The input is of the form BGRA, we only need the RGB part.
+                inputPlanar[i * predWidth + j + 0 * size] = (float) pixels[(_i * width + _j) * 4 + 2];
+                inputPlanar[i * predWidth + j + 1 * size] = (float) pixels[(_i * width + _j) * 4 + 1];
+                inputPlanar[i * predWidth + j + 2 * size] = (float) pixels[(_i * width + _j) * 4 + 0];
             }
         }
 
-        input.Resize(std::vector<int>({1, 3, height, width}));
+        input.Resize(std::vector<int>({crops, channels, predHeight, predWidth}));
         input.ShareExternalPointer(inputPlanar.data());
 
         caffe2::Predictor::TensorVector input_vec{&input};
         _predictor->run(input_vec, &output_vec);
-        caffe2::TensorCPU *output = output_vec.front();
-    }
-
-
-    if (output_vec.capacity() > 0) {
-        outStr = "Predicted";
+        constexpr int k = 5;
+        float max[k] = {0};
+        int max_index[k] = {0};
+        // Find the top-k results manually.
+        if (output_vec.capacity() > 0) {
+            for (auto output : output_vec) {
+                for (auto i = 0; i < output->size(); ++i) {
+                    for (auto j = 0; j < k; ++j) {
+                        if (output->template data<float>()[i] > max[j]) {
+                            for (auto _j = k - 1; _j > j; --_j) {
+                                max[_j - 1] = max[_j];
+                                max_index[_j - 1] = max_index[_j];
+                            }
+                            max[j] = output->template data<float>()[i];
+                            max_index[j] = i;
+                            goto skip;
+                        }
+                    }
+                    skip:;
+                }
+            }
+        }
+        std::ostringstream stringStream;
+        for (auto j = 0; j < k; ++j) {
+            stringStream << j << ": " << imagenet_classes[max_index[j]] << " - " << max[j] * 100 << "%\n";
+        }
+        outStr = stringStream.str();
+        busyWithInference = false;
+        return env->NewStringUTF(outStr.c_str());
     }
 
     busyWithInference = false;
