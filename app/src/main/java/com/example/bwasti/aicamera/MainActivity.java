@@ -41,13 +41,15 @@ public class MainActivity extends Activity {
     private boolean inPreview = false;
     private boolean cameraConfigured = false;
     private AssetManager mgr;
+    private int camHeight;
+    private int camWidth;
 
-    private class SetUpNeuralNetwork extends AsyncTask {
+    private class SetUpNeuralNetwork extends AsyncTask<Void, Void, Void> {
         @Override
-        protected Object doInBackground(Object[] obj) {
+        protected Void doInBackground(Void[] v) {
             setUpNets(mgr);
             currentLabel = "Neural net loaded! Inferring...";
-            return obj;
+            return null;
         }
     }
 
@@ -112,7 +114,7 @@ public class MainActivity extends Activity {
         return (result);
     }
 
-    private void initPreview(int width, int height) {
+    private void initPreview() {
         if (camera != null && previewHolder.getSurface() != null) {
             try {
                 camera.setPreviewDisplay(previewHolder);
@@ -126,12 +128,13 @@ public class MainActivity extends Activity {
 
             if (!cameraConfigured) {
                 Camera.Parameters parameters = camera.getParameters();
-                Camera.Size size = getBestPreviewSize(width, height,
-                        parameters);
+                Camera.Size size = getBestPreviewSize(camWidth, camHeight,
+                       parameters);
 
                 if (size != null) {
                     parameters.setPreviewSize(size.width, size.height);
                     parameters.set("rotation", 90);
+                    parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
                     camera.setParameters(parameters);
                     camera.setDisplayOrientation(90);
                     cameraConfigured = true;
@@ -207,12 +210,18 @@ public class MainActivity extends Activity {
 
     SurfaceHolder.Callback surfaceCallback = new SurfaceHolder.Callback() {
         public void surfaceCreated(SurfaceHolder holder) {
+            camera.stopPreview();
+            cameraConfigured = false;
+            initPreview();
+            startPreview();
         }
 
         public void surfaceChanged(SurfaceHolder holder,
                                    int format, int width,
                                    int height) {
-            initPreview(width, height);
+            camHeight = height;
+            camWidth = width;
+            initPreview();
             startPreview();
         }
 

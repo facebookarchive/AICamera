@@ -13,7 +13,6 @@ static caffe2::NetDef _initNet, _predictNet;
 static caffe2::Predictor *_predictor;
 
 class BitmapPixelsLock {
-    // members
     JNIEnv* mEnv;
     jobject mBitmap;
     uint8_t* mPtr;
@@ -64,7 +63,8 @@ Java_com_example_aicamera_MainActivity_setUpNets(
     AAssetManager *mgr = AAssetManager_fromJava(env, assetManager);
     loadToNetDef(mgr, &_initNet,   "squeeze_init_net.pb");
     loadToNetDef(mgr, &_predictNet,"squeeze_predict_net.pb");
-    _predictNet.set_name("PredictNet"); // We need to ensure a name is set to run.
+    std::string name("PredictNet");
+    _predictNet.set_name(name); // We need to ensure a name is set to run.
     _predictor = new caffe2::Predictor(_initNet, _predictNet);
 
 }
