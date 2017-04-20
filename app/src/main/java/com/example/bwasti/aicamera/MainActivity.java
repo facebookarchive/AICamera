@@ -1,4 +1,4 @@
-package com.example.aicamera;
+package com.example.bwasti.aicamera;
 
 import android.app.Activity;
 import android.content.res.AssetManager;

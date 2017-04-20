@@ -56,7 +56,7 @@ void loadToNetDef(AAssetManager* mgr, caffe2::NetDef* net, const char *filename)
 
 extern "C"
 void
-Java_com_example_aicamera_MainActivity_setUpNets(
+Java_com_example_bwasti_aicamera_MainActivity_setUpNets(
         JNIEnv* env,
         jobject /* this */,
         jobject assetManager) {
@@ -74,7 +74,7 @@ static std::string outStr = "NN loading...";
 
 extern "C"
 jstring
-Java_com_example_aicamera_MainActivity_classificationFromImage(
+Java_com_example_bwasti_aicamera_MainActivity_classificationFromImage(
         JNIEnv* env,
         jobject /* this */,
         jobject bitmap,
