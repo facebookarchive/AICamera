@@ -14,7 +14,7 @@ Click the green play button in Android Studio 2.2 and everything should build :)
 
 ### Tests
 
-| Device        | Network       |  FPS  |
-| ------------- | ------------- | ----- |
-| Galaxy S7     | SqueezeNet    |  5.8  |
-| Google Pixel  | SqueezeNet    |  5.7  |
+| Device             | Network       |  FPS  |
+| ------------------ | ------------- | ----- |
+| Samsung Galaxy S7  | SqueezeNet    |  5.8  |
+| Google Pixel       | SqueezeNet    |  5.7  |
