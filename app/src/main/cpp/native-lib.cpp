@@ -65,6 +65,7 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
         JNIEnv *env,
         jobject /* this */,
         jint h, jint w, jbyteArray Y, jbyteArray U, jbyteArray V,
+        jint rowStride, jint pixelStride,
         jboolean infer_HWC) {
     if (!_predictor) {
         return env->NewStringUTF("Loading...");
@@ -82,19 +83,20 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
 #define min(a,b) ((a) > (b)) ? (b) : (a)
 #define max(a,b) ((a) > (b)) ? (a) : (b)
 
+    assert(IMG_H <= h);
+    assert(IMG_W <= w);
     auto h_offset = max(0, (h - IMG_H) / 2);
     auto w_offset = max(0, (w - IMG_W) / 2);
 
     for (auto i = 0; i < IMG_H; ++i) {
         jbyte* Y_row = &Y_data[(h_offset + i) * w];
-        jbyte* U_row = &U_data[(h_offset + i) / 2 * w];
-        jbyte* V_row = &V_data[(h_offset + i) / 2 * w];
+        jbyte* U_row = &U_data[(h_offset + i) / 4 * rowStride];
+        jbyte* V_row = &V_data[(h_offset + i) / 4 * rowStride];
         for (auto j = 0; j < IMG_W; ++j) {
-            // We function under a format assumption here: YUV420, with certain storage
-            // but this could change.  Tested on Pixel and S7.
+            // Tested on Pixel and S7.
             char y = Y_row[w_offset + j];
-            char u = U_row[2 * ((w_offset+j)/2)];
-            char v = V_row[2 * ((w_offset+j)/2)];
+            char u = U_row[pixelStride * ((w_offset+j)/pixelStride)];
+            char v = V_row[pixelStride * ((w_offset+j)/pixelStride)];
 
             float b_mean = 104.00698793f;
             float g_mean = 116.66876762f;

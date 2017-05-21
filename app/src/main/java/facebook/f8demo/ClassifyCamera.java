@@ -73,7 +73,8 @@ public class ClassifyCamera extends AppCompatActivity {
         System.loadLibrary("native-lib");
     }
 
-    public native String classificationFromCaffe2(int h, int w, byte[] Y, byte[] U, byte[] V, boolean r_hwc);
+    public native String classificationFromCaffe2(int h, int w, byte[] Y, byte[] U, byte[] V,
+                                                  int rowStride, int pixelStride, boolean r_hwc);
     public native void initCaffe2(AssetManager mgr);
     private class SetUpNeuralNetwork extends AsyncTask<Void, Void, Void> {
         @Override
@@ -227,7 +228,8 @@ public class ClassifyCamera extends AppCompatActivity {
                         Ubuffer.get(U);
                         Vbuffer.get(V);
 
-                        predictedClass = classificationFromCaffe2(h, w, Y, U, V, run_HWC);
+                        predictedClass = classificationFromCaffe2(h, w, Y, U, V,
+                                rowStride, pixelStride, run_HWC);
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
