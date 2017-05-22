@@ -83,16 +83,23 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
 #define min(a,b) ((a) > (b)) ? (b) : (a)
 #define max(a,b) ((a) > (b)) ? (a) : (b)
 
-    assert(IMG_H <= h);
-    assert(IMG_W <= w);
     auto h_offset = max(0, (h - IMG_H) / 2);
     auto w_offset = max(0, (w - IMG_W) / 2);
 
-    for (auto i = 0; i < IMG_H; ++i) {
+    auto iter_h = IMG_H;
+    auto iter_w = IMG_W;
+    if (h < IMG_H) {
+        iter_h = h;
+    }
+    if (w < IMG_W) {
+        iter_w = w;
+    }
+
+    for (auto i = 0; i < iter_h; ++i) {
         jbyte* Y_row = &Y_data[(h_offset + i) * w];
         jbyte* U_row = &U_data[(h_offset + i) / 4 * rowStride];
         jbyte* V_row = &V_data[(h_offset + i) / 4 * rowStride];
-        for (auto j = 0; j < IMG_W; ++j) {
+        for (auto j = 0; j < iter_w; ++j) {
             // Tested on Pixel and S7.
             char y = Y_row[w_offset + j];
             char u = U_row[pixelStride * ((w_offset+j)/pixelStride)];
