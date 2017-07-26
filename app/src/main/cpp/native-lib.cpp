@@ -49,6 +49,8 @@ Java_facebook_f8demo_ClassifyCamera_initCaffe2(
     alog("Attempting to load protobuf netdefs...");
     loadToNetDef(mgr, &_initNet,   "squeeze_init_net.pb");
     loadToNetDef(mgr, &_predictNet,"squeeze_predict_net.pb");
+    //loadToNetDef(mgr, &_initNet,   "exec_net.pb");
+    //loadToNetDef(mgr, &_predictNet,"predict_net.pb");
     alog("done.");
     alog("Instantiating predictor...");
     _predictor = new caffe2::Predictor(_initNet, _predictNet);
@@ -68,7 +70,7 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
         jint rowStride, jint pixelStride,
         jboolean infer_HWC) {
     if (!_predictor) {
-        return env->NewStringUTF("Loading...");
+        return env->NewStringUTF("Loading2...");
     }
     jsize Y_len = env->GetArrayLength(Y);
     jbyte * Y_data = env->GetByteArrayElements(Y, 0);
@@ -94,24 +96,27 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
     if (w < IMG_W) {
         iter_w = w;
     }
-
+    auto s = w * h;
     for (auto i = 0; i < iter_h; ++i) {
-        jbyte* Y_row = &Y_data[(h_offset + i) * w];
-        jbyte* U_row = &U_data[(h_offset + i) / 4 * rowStride];
-        jbyte* V_row = &V_data[(h_offset + i) / 4 * rowStride];
+        //jbyte* Y_row = &Y_data[(h_offset + i) * w];
+        //jbyte* U_row = &U_data[(h_offset + i) / 2 * rowStride];
+        //jbyte* V_row = &V_data[(h_offset + i) / 2 * rowStride];
+        jbyte* Y_row = &Y_data[(h_offset + i) * rowStride];
+        jbyte* U_row = &U_data[(h_offset + i) * rowStride];
+        jbyte* V_row = &V_data[(h_offset + i) * rowStride];
         for (auto j = 0; j < iter_w; ++j) {
             // Tested on Pixel and S7.
             char y = Y_row[w_offset + j];
-            char u = U_row[pixelStride * ((w_offset+j)/pixelStride)];
-            char v = V_row[pixelStride * ((w_offset+j)/pixelStride)];
+            char u = U_row[w_offset + j];
+            char v = V_row[w_offset + j];
 
             float b_mean = 104.00698793f;
             float g_mean = 116.66876762f;
             float r_mean = 122.67891434f;
 
-            auto b_i = 0 * IMG_H * IMG_W + j * IMG_W + i;
-            auto g_i = 1 * IMG_H * IMG_W + j * IMG_W + i;
-            auto r_i = 2 * IMG_H * IMG_W + j * IMG_W + i;
+            auto r_i = 0 * IMG_H * IMG_W + i * IMG_W + j;
+            auto g_i = 1 * IMG_H * IMG_W + i * IMG_W + j;
+            auto b_i = 2 * IMG_H * IMG_W + i * IMG_W + j;
 
             if (infer_HWC) {
                 b_i = (j * IMG_W + i) * IMG_C;
@@ -125,7 +130,7 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
  */
             input_data[r_i] = -r_mean + (float) ((float) min(255., max(0., (float) (y + 1.402 * (v - 128)))));
             input_data[g_i] = -g_mean + (float) ((float) min(255., max(0., (float) (y - 0.34414 * (u - 128) - 0.71414 * (v - 128)))));
-            input_data[b_i] = -b_mean + (float) ((float) min(255., max(0., (float) (y + 1.772 * (u - v)))));
+            input_data[b_i] = -b_mean + (float) ((float) min(255., max(0., (float) (y + 1.772 * (u - 128)))));
 
         }
     }
@@ -155,10 +160,10 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
         for (auto output : output_vec) {
             for (auto i = 0; i < output->size(); ++i) {
                 for (auto j = 0; j < k; ++j) {
-                    if (output->template data<float>()[i] > max[j]) {
+                    if (output->data<float>()[i] > max[j]) {
                         for (auto _j = k - 1; _j > j; --_j) {
-                            max[_j - 1] = max[_j];
-                            max_index[_j - 1] = max_index[_j];
+                            max[_j] = max[_j-1];
+                            max_index[_j] = max_index[_j-1];
                         }
                         max[j] = output->template data<float>()[i];
                         max_index[j] = i;

@@ -199,8 +199,8 @@ public class ClassifyCamera extends AppCompatActivity {
             assert texture != null;
             texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
             Surface surface = new Surface(texture);
-            int width = 227;
-            int height = 227;
+            int width = 240;
+            int height = 160;
             ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 4);
             ImageReader.OnImageAvailableListener readerListener = new ImageReader.OnImageAvailableListener() {
                 @Override
@@ -215,6 +215,7 @@ public class ClassifyCamera extends AppCompatActivity {
                         processing = true;
                         int w = image.getWidth();
                         int h = image.getHeight();
+                        Log.d("classifyCamera", String.valueOf(w));
                         ByteBuffer Ybuffer = image.getPlanes()[0].getBuffer();
                         ByteBuffer Ubuffer = image.getPlanes()[1].getBuffer();
                         ByteBuffer Vbuffer = image.getPlanes()[2].getBuffer();
