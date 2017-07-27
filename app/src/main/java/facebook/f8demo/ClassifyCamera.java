@@ -38,6 +38,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.os.Environment;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -47,6 +48,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static android.os.Environment.getExternalStorageDirectory;
 import static android.view.View.SYSTEM_UI_FLAG_IMMERSIVE;
 
 public class ClassifyCamera extends AppCompatActivity {
@@ -199,8 +201,8 @@ public class ClassifyCamera extends AppCompatActivity {
             assert texture != null;
             texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
             Surface surface = new Surface(texture);
-            int width = 240;
-            int height = 160;
+            int width = 227;
+            int height = 227;
             ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 4);
             ImageReader.OnImageAvailableListener readerListener = new ImageReader.OnImageAvailableListener() {
                 @Override
@@ -229,8 +231,18 @@ public class ClassifyCamera extends AppCompatActivity {
                         Ubuffer.get(U);
                         Vbuffer.get(V);
 
+                        Log.i("codecraeer", "getFilesDir = " + getFilesDir());
+                        Log.i("codecraeer", "getExternalFilesDir = " + getExternalFilesDir("exter_test").getAbsolutePath());
+                        Log.i("codecraeer", "getDownloadCacheDirectory = " + Environment.getDownloadCacheDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getDataDirectory = " + Environment.getDataDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getExternalStorageDirectory = " + Environment.getExternalStorageDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getExternalStoragePublicDirectory = " + Environment.getExternalStoragePublicDirectory("pub_test"));
+
+                        //File af = getExternalStorageDirectory();
+                        Log.e(TAG, "aa");
                         predictedClass = classificationFromCaffe2(h, w, Y, U, V,
                                 rowStride, pixelStride, run_HWC);
+                        Log.e(TAG, predictedClass);
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
