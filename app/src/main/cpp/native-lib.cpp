@@ -203,7 +203,5 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
         stringStream << j << ": " << imagenet_classes[max_index[j]] << " - " << max[j] * 100 << "%\n";
     }
 
-
-
     return env->NewStringUTF(stringStream.str().c_str());
 }
