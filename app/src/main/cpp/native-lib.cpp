@@ -159,7 +159,7 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
     }*/
 
     caffe2::TensorCPU input;
-    if (false){//infer_HWC) {
+    if (infer_HWC) {
         input.Resize(std::vector<int>({1, IMG_H, IMG_W, IMG_C}));
     } else {
         input.Resize(std::vector<int>({1, IMG_C, IMG_H, IMG_W}));
