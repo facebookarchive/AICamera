@@ -231,18 +231,15 @@ public class ClassifyCamera extends AppCompatActivity {
                         Ubuffer.get(U);
                         Vbuffer.get(V);
 
-                        Log.i("codecraeer", "getFilesDir = " + getFilesDir());
+                        /*Log.i("codecraeer", "getFilesDir = " + getFilesDir());
                         Log.i("codecraeer", "getExternalFilesDir = " + getExternalFilesDir("exter_test").getAbsolutePath());
                         Log.i("codecraeer", "getDownloadCacheDirectory = " + Environment.getDownloadCacheDirectory().getAbsolutePath());
                         Log.i("codecraeer", "getDataDirectory = " + Environment.getDataDirectory().getAbsolutePath());
                         Log.i("codecraeer", "getExternalStorageDirectory = " + Environment.getExternalStorageDirectory().getAbsolutePath());
-                        Log.i("codecraeer", "getExternalStoragePublicDirectory = " + Environment.getExternalStoragePublicDirectory("pub_test"));
+                        Log.i("codecraeer", "getExternalStoragePublicDirectory = " + Environment.getExternalStoragePublicDirectory("pub_test"));*/
 
-                        //File af = getExternalStorageDirectory();
-                        Log.e(TAG, "aa");
                         predictedClass = classificationFromCaffe2(h, w, Y, U, V,
                                 rowStride, pixelStride, run_HWC);
-                        Log.e(TAG, predictedClass);
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {

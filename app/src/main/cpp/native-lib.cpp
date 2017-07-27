@@ -98,7 +98,6 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
     if (w < IMG_W) {
         iter_w = w;
     }
-    auto s = w * h;
     for (auto i = 0; i < iter_h; ++i) {
         //jbyte* Y_row = &Y_data[(h_offset + i) * w];
         //jbyte* U_row = &U_data[(h_offset + i) / 2 * rowStride];
