@@ -160,15 +160,17 @@ class CUDAContext final {
     return curand_generator_;
   }
 
-  static void* New(size_t nbytes);
-
-  static void Delete(void* data);
-
+  static std::pair<void*, MemoryDeleter> New(size_t nbytes);
 
   // Get a mutex to lock out cudaMalloc / cudaFree calls when
   // NCCL kernels are being launched. Should remove threat of
   // deadlocks
   static std::mutex& mutex();
+
+  // Functions to query memory stats. Only available if flag
+  // --caffe2_gpu_memory_tracking is enabled.
+  static std::vector<long> TotalMemoryByGpu();
+  static std::vector<long> MaxMemoryByGpu();
 
   template <class SrcContext, class DstContext>
   inline void CopyBytes(size_t nbytes, const void* src, void* dst) {
@@ -199,6 +201,8 @@ class CUDAContext final {
   }
 
  protected:
+  static void Delete(void* data);
+
   int gpu_id_;
   int stream_id_ = 0;
   int random_seed_;
@@ -235,15 +239,17 @@ inline void CPUContext::CopyBytes<CPUContext, CUDAContext>(
  */
 struct PinnedCPUAllocator final : CPUAllocator {
   PinnedCPUAllocator() {}
-  ~PinnedCPUAllocator() {}
-  void* New(size_t nbytes) override {
+  ~PinnedCPUAllocator() override {}
+  std::pair<void*, MemoryDeleter> New(size_t nbytes) override {
     void* data;
     std::lock_guard<std::mutex> lock(CUDAContext::mutex());
     CUDA_ENFORCE(cudaMallocHost(&data, nbytes));
     memset(data, 0, nbytes);
-    return data;
+    return {data, Delete};
   }
-  void Delete(void* data) override {
+
+ private:
+  static void Delete(void* data) {
     // Caffe2 uses a lazy way to figure out if one is actually going to use GPUs
     // or not. If a CUDAContext::New() call is made, inside the CUDAContext
     // function we will switch the cpu side allocator to a PinnedCPUAllocator.

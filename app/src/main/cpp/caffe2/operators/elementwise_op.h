@@ -65,7 +65,7 @@ class UnaryElementwiseWithArgsOp : public Operator<Context> {
  */
 template <typename Functor>
 struct WithDefaultConstructor {
-  explicit WithDefaultConstructor(OperatorBase& op) {}
+  explicit WithDefaultConstructor(OperatorBase& /*op*/) {}
 
   template <typename In, typename Out, typename Context>
   void operator()(int n, const In* in, Out* out, Context* c) {
@@ -225,22 +225,22 @@ struct WithoutBroadcast {
   }
   template <typename T, typename R, typename Context>
   inline void RunWithBroadcast(
-      const T* a,
-      const T* b,
-      R* out,
-      size_t pre,
-      size_t n,
+      const T* /*a*/,
+      const T* /*b*/,
+      R* /*out*/,
+      size_t /*pre*/,
+      size_t /*n*/,
       Context*) {
     CAFFE_NOT_IMPLEMENTED;
   }
   template <typename T, typename R, typename Context>
   inline void RunWithBroadcast2(
-      const T* a,
-      const T* b,
-      R* out,
-      size_t pre,
-      size_t n,
-      size_t post,
+      const T* /*a*/,
+      const T* /*b*/,
+      R* /*out*/,
+      size_t /*pre*/,
+      size_t /*n*/,
+      size_t /*post*/,
       Context*) {
     CAFFE_NOT_IMPLEMENTED;
   }
@@ -256,15 +256,74 @@ class DivGradientOp final : public Operator<Context> {
   bool RunOnDevice() override;
 };
 
+namespace SRLHelper {
+
+template <typename T>
+void sum2one(const T* a, T* y, size_t n);
+
+template <typename T>
+void RunWithBroadcastFront(const T* a, T* y, size_t pre, size_t n, CPUContext*);
+
+template <typename T>
+void RunWithBroadcastBack(const T* a, T* y, size_t post, size_t n, CPUContext*);
+
+template <typename T>
+void RunWithBroadcast2(
+    const T* a,
+    T* y,
+    size_t pre,
+    size_t n,
+    size_t post,
+    CPUContext*);
+
+} // namespace SRLHelper
+
 // Sum reduction operator that is used for computing the gradient in cases
 // where the forward op is in broadcast mode.
 template <class Context>
 class SumReduceLikeOp final : public Operator<Context> {
  public:
-  USE_SIMPLE_CTOR_DTOR(SumReduceLikeOp);
   USE_OPERATOR_CONTEXT_FUNCTIONS;
+  SumReduceLikeOp(const OperatorDef& operator_def, Workspace* ws)
+      : Operator<Context>(operator_def, ws),
+        OP_SINGLE_ARG(int, "axis", axis_, -1),
+        OP_SINGLE_ARG(string, "axis_str", axis_str_, ""),
+        OP_SINGLE_ARG(string, "order", order_, "NCHW") {
+    if (axis_ != -1) {
+      // Get axis from an explicit axis argument.
+      CAFFE_ENFORCE_EQ(
+          axis_str_.size(),
+          0,
+          "Args axis and axis_str cannot be used simultaneously.");
+    } else if (axis_str_.size()) {
+      // Get the axis index semantically.
+      CAFFE_ENFORCE_EQ(
+          axis_str_.size(), 1, "Unsupported axis string", axis_str_);
+      size_t semantic_axis = order_.find(axis_str_);
+      CAFFE_ENFORCE_NE(
+          semantic_axis,
+          string::npos,
+          "Unrecognizable axis string ",
+          axis_str_,
+          " from order string ",
+          order_);
+      axis_ = semantic_axis;
+    }
+  }
 
-  bool RunOnDevice() override;
+  bool RunOnDevice() override {
+    return DispatchHelper<TensorTypes<float, double>>::call(this, Input(0));
+  }
+
+  template <typename T>
+  bool DoRunWithType();
+
+ private:
+  int axis_;
+  string axis_str_;
+  string order_;
+  Tensor<Context> ones_;
+  Tensor<Context> sum_buffer_;
 };
 
 template <class Context>
@@ -274,8 +333,8 @@ bool DivGradientOp<Context>::RunOnDevice() {
   auto& dZ = Input(2);
   auto* dX = Output(0);
   auto* dY = Output(1);
-  DCHECK_GT(Y.size(), 0);
-  DCHECK_GT(Z.size(), 0);
+  CAFFE_ENFORCE_GT(Y.size(), 0);
+  CAFFE_ENFORCE_GT(Z.size(), 0);
   dX->ResizeLike(Y);
   dY->ResizeLike(Y);
 

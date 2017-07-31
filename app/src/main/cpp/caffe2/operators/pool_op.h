@@ -16,14 +16,16 @@ class PoolOp final : public ConvPoolOpBase<Context> {
   USE_CONV_POOL_BASE_FUNCTIONS(Context);
   PoolOp(const OperatorDef& operator_def, Workspace* ws)
       : ConvPoolOpBase<Context>(operator_def, ws) {
-    CAFFE_ENFORCE(
-        dilation_h_ == 1 && dilation_w_ == 1,
-        "Pooling op does not support dilation right now.");
-    if (!global_pooling_) {
+    for (int i = 0; i < kernel_.size(); ++i) {
       CAFFE_ENFORCE(
-          pad_t_ < kernel_h_ && pad_b_ < kernel_h_ && pad_l_ < kernel_w_ &&
-              pad_r_ < kernel_w_,
-          "Pad should be smaller than kernel.");
+          dilation_[i] == 1, "Pooling op does not support dilation right now.");
+    }
+    if (!global_pooling_) {
+      for (int i = 0; i < kernel_.size(); ++i) {
+        CAFFE_ENFORCE(
+            pads_[i] < kernel_[i] && pads_[i + kernel_.size()] < kernel_[i],
+            "Pad should be smaller than kernel.");
+      }
     }
   }
   ~PoolOp() {}

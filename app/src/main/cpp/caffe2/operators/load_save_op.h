@@ -36,6 +36,36 @@ using db::DB;
 using db::Transaction;
 
 template <class Context>
+class DBExistsOp final : public Operator<Context> {
+ public:
+  USE_OPERATOR_CONTEXT_FUNCTIONS;
+  DBExistsOp(const OperatorDef& operator_def, Workspace* ws)
+      : Operator<Context>(operator_def, ws),
+        ws_(ws),
+        absolute_path_(
+            OperatorBase::GetSingleArgument<int>("absolute_path", false)),
+        db_name_(OperatorBase::GetSingleArgument<string>("db_name", "")),
+        db_type_(OperatorBase::GetSingleArgument<string>("db_type", "")) {}
+
+  bool RunOnDevice() override {
+    string full_db_name =
+        absolute_path_ ? db_name_ : (ws_->RootFolder() + "/" + db_name_);
+    auto* output = Output(0);
+    output->Resize();
+    bool* exists = output->template mutable_data<bool>();
+
+    *exists = caffe2::db::DBExists(db_type_, full_db_name);
+    return true;
+  }
+
+ private:
+  Workspace* ws_;
+  bool absolute_path_;
+  std::string db_name_;
+  std::string db_type_;
+};
+
+template <class Context>
 class LoadOp final : public Operator<Context> {
  public:
   USE_OPERATOR_CONTEXT_FUNCTIONS;
@@ -44,23 +74,41 @@ class LoadOp final : public Operator<Context> {
         ws_(ws),
         absolute_path_(
             OperatorBase::GetSingleArgument<int>("absolute_path", false)),
-        add_prefix_(
-            OperatorBase::GetSingleArgument<string>("add_prefix", "")),
+        add_prefix_(OperatorBase::GetSingleArgument<string>("add_prefix", "")),
+        strip_prefix_(
+            OperatorBase::GetSingleArgument<string>("strip_prefix", "")),
         db_name_(OperatorBase::GetSingleArgument<string>("db", "")),
         db_type_(OperatorBase::GetSingleArgument<string>("db_type", "")),
         keep_device_(OperatorBase::GetSingleArgument<int>("keep_device", 0)),
-        load_all_(OperatorBase::GetSingleArgument<int>("load_all", 0)) {
+        load_all_(OperatorBase::GetSingleArgument<int>("load_all", 0)),
+        allow_incomplete_(
+            OperatorBase::GetSingleArgument<bool>("allow_incomplete", false)),
+        blob_names_(OperatorBase::GetRepeatedArgument<string>(
+            "source_blob_names")) {
     if (InputSize() == 0) {
       CAFFE_ENFORCE_GT(db_name_.size(), 0, "Must specify a db name.");
       CAFFE_ENFORCE_GT(db_type_.size(), 0, "Must specify a db type.");
     }
+    CAFFE_ENFORCE(blob_names_.empty() || blob_names_.size() == OutputSize(),
+      "Number of output blobs and source_blob_names mismatch.");
+    CAFFE_ENFORCE(blob_names_.empty() || strip_prefix_.empty(),
+        "strip_prefix and source_blob_names are mutually exclusive.");
+    CAFFE_ENFORCE(blob_names_.empty() || !load_all_,
+        "cannot load_all_ while using source_blob_names.");
     if (!load_all_) {
+      // blob_names_ will be filled with ''source blob names'' in file/db
+      // if argument source_blob_names is not given, then blob_names_ is
+      // inferred from operator output
+      if(blob_names_.empty()) {
+        for (const string& name : operator_def.output()) {
+          blob_names_.push_back(name);
+        }
+      }
       int idx = 0;
-      std::set<std::string> input_names;
-      for (const string& output_name : this->def().output()) {
-        std::string name = output_name;
-        CAFFE_ENFORCE(
-            input_names.insert(name).second, "Duplicated input: ", name);
+      std::set<std::string> name_set;
+      for (const string& name : blob_names_) {
+        CAFFE_ENFORCE(name_set.insert(name).second,
+            "Duplicated source blob name: ", name);
         output_indices_[name] = idx++;
       }
     }
@@ -99,8 +147,7 @@ class LoadOp final : public Operator<Context> {
     std::unordered_map<string, BlobState> blob_states;
     int loaded_blobs = 0;
     for (; cursor->Valid(); cursor->Next()) {
-      const string& dbKey = cursor->key();
-      auto key = add_prefix_ + dbKey.substr(0, dbKey.find(kChunkIdSeparator));
+      const auto key = buildBlobNameFromDbKey(cursor->key());
       BlobProto proto;
       CAFFE_ENFORCE(
           proto.ParseFromString(cursor->value()), "Couldn't parse Proto");
@@ -123,8 +170,7 @@ class LoadOp final : public Operator<Context> {
     std::unordered_map<string, BlobState> blob_states;
     int loaded_blobs = 0;
     for (; cursor->Valid(); cursor->Next()) {
-      const string& dbKey = cursor->key();
-      auto key = add_prefix_ + dbKey.substr(0, dbKey.find(kChunkIdSeparator));
+      const auto key = buildBlobNameFromDbKey(cursor->key());
       if (!output_indices_.count(key)) {
         VLOG(1) << "Key " << key << " not used. Skipping.";
       } else {
@@ -151,7 +197,12 @@ class LoadOp final : public Operator<Context> {
     VLOG(1) << "Fully loaded " << blob_states.size() << " blobs";
 
     if (loaded_blobs != OutputSize()) {
-      for (const string& output_name : this->def().output()) {
+      if (allow_incomplete_ && loaded_blobs < OutputSize()) {
+        VLOG(1) << "Loaded " << loaded_blobs << " blobs out of " << OutputSize()
+                << " blobs from db.";
+        return;
+      }
+      for (const string& output_name : this->debug_def().output()) {
         if (blob_states.count(output_name) == 0) {
           LOG(ERROR) << "Failed to load blob: " << output_name;
         }
@@ -163,6 +214,18 @@ class LoadOp final : public Operator<Context> {
           loaded_blobs,
           " only.\n");
     }
+  }
+
+  string buildBlobNameFromDbKey(const string& dbKey) {
+    string key = dbKey.substr(0, dbKey.find(kChunkIdSeparator));
+    if (!strip_prefix_.empty()) {
+      auto match_pos = key.find(strip_prefix_);
+      if (match_pos != string::npos) {
+        key = key.substr(match_pos + strip_prefix_.size());
+      }
+    }
+    key = add_prefix_ + key;
+    return key;
   }
 
  private:
@@ -184,7 +247,7 @@ class LoadOp final : public Operator<Context> {
       blob->Reset();
     }
     blob->Deserialize(proto);
-    if (!blob->IsType<Tensor<Context>>()) {
+    if (!proto.has_tensor()) {
       // Only tensors can be seen multiple times as chunks.
       CAFFE_ENFORCE(blob_states.count(key) == 0, "Blob duplicated:", key);
       blob_states[key] = BlobState();
@@ -210,7 +273,11 @@ class LoadOp final : public Operator<Context> {
           "Tensor parts are bigger than target size for tensor: ",
           key);
     } else {
-      auto total_size = blob->Get<Tensor<Context>>().size();
+      const auto& dims = proto.tensor().dims();
+      int64_t total_size = 1;
+      for (const auto& dim : dims) {
+        total_size *= dim;
+      }
       auto current_size = total_size;
       if (proto.tensor().has_segment()) {
         current_size =
@@ -232,7 +299,7 @@ class LoadOp final : public Operator<Context> {
       if (blob_state.is_tensor) {
         CAFFE_ENFORCE(
             blob_state.current_size == blob_state.total_size,
-            "Data size mistmatch for blob ",
+            "Data size mismatch for blob ",
             iter.first,
             ". Expected: ",
             blob_state.total_size,
@@ -245,11 +312,14 @@ class LoadOp final : public Operator<Context> {
   Workspace* ws_;
   bool absolute_path_;
   string add_prefix_;
+  string strip_prefix_;
   string db_name_;
   string db_type_;
   bool keep_device_;
   bool load_all_;
+  bool allow_incomplete_;
   std::map<string, int> output_indices_;
+  std::vector<std::string> blob_names_;
 };
 
 template <class Context>
@@ -282,13 +352,16 @@ class SaveOp final : public Operator<Context> {
       blob_names_.resize(OperatorBase::Inputs().size());
       for (int i = 0; i < blob_names_.size(); ++i) {
         std::string name;
-        if(strip_prefix_.empty()) {
-            name = def().input(i);
-        }
-        else {
-            auto match_pos = def().input(i).find(strip_prefix_);
-            name = def().input(i).substr(
+        if (strip_prefix_.empty()) {
+          name = operator_def.input(i);
+        } else {
+          auto match_pos = operator_def.input(i).find(strip_prefix_);
+          if (match_pos == string::npos) {
+            name = operator_def.input(i);
+          } else {
+            name = operator_def.input(i).substr(
                 match_pos + strip_prefix_.size(), string::npos);
+          }
         }
         CAFFE_ENFORCE(
             input_names.insert(name).second, "Duplicated input: ", name);

@@ -2,6 +2,7 @@
 #define CAFFE2_CORE_WORKSPACE_H_
 
 #include "caffe2/core/common.h"
+#include "caffe2/core/observer.h"
 
 #ifndef CAFFE2_MOBILE
 #error "mobile build state not defined"
@@ -22,6 +23,8 @@
 #include "caffe2/utils/threadpool/ThreadPool.h"
 #endif // CAFFE2_MOBILE
 
+CAFFE2_DECLARE_bool(caffe2_print_blob_sizes_at_exit);
+
 namespace caffe2 {
 
 class NetBase;
@@ -34,12 +37,13 @@ struct StopOnSignal {
 
   StopOnSignal(const StopOnSignal& other) : handler_(other.handler_) {}
 
-  bool operator()(int iter) {
+  bool operator()(int /*iter*/) {
     return handler_->CheckForSignals() != SignalHandler::Action::STOP;
   }
 
   std::shared_ptr<SignalHandler> handler_;
 };
+
 
 /**
  * Workspace is a class that holds all the related objects created during
@@ -54,7 +58,8 @@ class Workspace {
   /**
    * Initializes an empty workspace.
    */
-  Workspace() {}
+  Workspace() {
+  }
   /**
    * Initializes an empty workspace with the given root folder.
    *
@@ -80,7 +85,19 @@ class Workspace {
    */
   Workspace(const string& root_folder, Workspace* shared)
       : root_folder_(root_folder), shared_(shared) {}
-  ~Workspace() {}
+  ~Workspace() {
+    if (FLAGS_caffe2_print_blob_sizes_at_exit) {
+      PrintBlobSizes();
+    }
+  }
+
+  /**
+   * Allows to add a parent workspace post factum after the object
+   * was already constructed.
+   */
+  void SetParentWorkspace(Workspace* shared) {
+    shared_ = shared;
+  }
 
   /**
    * Return list of blobs owned by this Workspace, not including blobs
@@ -106,6 +123,8 @@ class Workspace {
     return (blob_map_.count(name) || (shared_ && shared_->HasBlob(name)));
   }
 
+  void PrintBlobSizes();
+
   /**
    * Creates a blob of the given name. The pointer to the blob is returned, but
    * the workspace keeps ownership of the pointer. If a blob of the given name
@@ -129,15 +148,19 @@ class Workspace {
    */
   Blob* GetBlob(const string& name);
 
-  // CreateNet creates a network in the current workspace. It can then
-  // be referred to by RunNet().
   /**
    * Creates a network with the given NetDef, and returns the pointer to the
    * network. If there is anything wrong during the creation of the network, a
    * nullptr is returned. The Workspace keeps ownership of the pointer.
+   *
+   * If there is already a net created in the workspace with the given name,
+   * CreateNet will overwrite it if overwrite=true is specified. Otherwise, an
+   * exception is thrown.
    */
-  NetBase* CreateNet(const NetDef& net_def);
-
+  NetBase* CreateNet(const NetDef& net_def, bool overwrite = false);
+  NetBase* CreateNet(
+      const std::shared_ptr<const NetDef>& net_def,
+      bool overwrite = false);
   /**
    * Gets the pointer to a created net. The workspace keeps ownership of the
    * network.
@@ -188,10 +211,8 @@ class Workspace {
   bool RunOperatorOnce(const OperatorDef& op_def);
   bool RunNetOnce(const NetDef& net_def);
 
- protected:
-  bool ExecuteStepRecursive(
-      const ExecutionStep& execution,
-      ShouldContinue externalShouldContinue);
+ public:
+  std::atomic<int> last_failed_op_net_position;
 
  private:
   BlobMap blob_map_;
