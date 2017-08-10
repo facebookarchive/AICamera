@@ -5,6 +5,7 @@
 #include "caffe2/core/logging.h"
 #include "caffe2/core/operator.h"
 #include "caffe2/core/tensor.h"
+#include "caffe2/operators/recurrent_network_executor.h"
 #include "google/protobuf/text_format.h"
 
 namespace caffe2 {
@@ -13,7 +14,7 @@ namespace detail {
 struct Param {
   std::string param;
   std::string grad;
-  std::string accGrad;
+  std::string cellGradient;
 };
 
 struct RecurrentInput {
@@ -39,10 +40,27 @@ struct Link {
   std::string internal;
   std::string external;
   int32_t offset{0};
+  int32_t window{1};
 };
 
+struct ScratchWorkspaces {
+  std::vector<std::shared_ptr<Workspace>> stepWorkspaces;
+  std::shared_ptr<Workspace> sharedBlobsWs = nullptr;
+};
+
+inline void UpdateTimestepBlob(Workspace* ws, std::string blob_name, int t) {
+  ws->CreateBlob(blob_name)->template GetMutable<TensorCPU>()->Resize(1);
+  auto timestepBlob = ws->GetBlob(blob_name);
+  CAFFE_ENFORCE(timestepBlob);
+  timestepBlob->template GetMutable<TensorCPU>()
+      ->template mutable_data<int32_t>()[0] = t;
+}
+
 template <typename T, typename Context>
-void applyOffsetAlias(const OffsetAlias& oc, Workspace* ws, Context* context) {
+void applyOffsetAlias(
+    const OffsetAlias& oc,
+    Workspace* ws,
+    Context* /*context*/) {
   VLOG(1) << "Aliasing: " << oc.src << " to: " << oc.dst
           << " at offset: " << oc.offset;
   auto srcBlob = ws->GetBlob(oc.src);
@@ -86,16 +104,21 @@ void initializeRecurrentInput(
   CAFFE_ENFORCE_LE(input.ndim(), 3, rc.input);
 
   const auto stateSize = input.dim(input.ndim() - 1);
-  // States at [0, ..., T] (inclusive)
-  state->Resize(seqLen + 1, batchSize, stateSize);
-
+  // Sometimes we want to provide more than one initial step.
+  // For example, if we do a convolution op in step net
+  // and need a sufficient left padding around the input.
+  // This could be used together with links where window != 1.
+  auto initialStateLength = 1;
   if (input.ndim() == 3) {
-    CAFFE_ENFORCE_EQ(input.dim(0), 1, rc.input);
+    initialStateLength = input.dim(0);
   }
+  // States at [0, ..., (T + initialStateLength - 1)] (inclusive)
+  state->Resize(seqLen + initialStateLength, batchSize, stateSize);
+
   if (input.ndim() >= 2) {
     CAFFE_ENFORCE_EQ(input.dim(input.ndim() - 2), batchSize, rc.input);
     context->template Copy<T, Context, Context>(
-        batchSize * stateSize,
+        batchSize * stateSize * initialStateLength,
         input.template data<T>(),
         state->template mutable_data<T>());
   } else {
@@ -123,23 +146,25 @@ void applyLink(const Link& link, size_t t, Workspace* ws) {
   CAFFE_ENFORCE(externalTensorBlob);
   auto* externalTensor =
       externalTensorBlob->template GetMutable<Tensor<Context>>();
-  CAFFE_ENFORCE_GT(externalTensor->size(), 0);
+  CAFFE_ENFORCE_GT(externalTensor->size(), 0, "Error with " + link.external);
   const TIndex externalTimestepSize =
       externalTensor->size() / externalTensor->dim(0);
   auto* externalData = externalTensor->template mutable_data<T>() +
       (t + link.offset) * externalTimestepSize;
   auto internalDims = externalTensor->dims();
   // Single timestep
-  internalDims[0] = 1;
+  internalDims[0] = link.window;
   internalTensor->Resize(internalDims);
-  internalTensor->ShareExternalPointer(externalData, externalTimestepSize);
+  internalTensor->ShareExternalPointer(
+      externalData, externalTimestepSize * link.window);
 }
 
 void extractLinks(
     OperatorBase* op,
     const std::string& internalArg,
     const std::string& externalArg,
-    const std::string offsetArg,
+    const std::string& offsetArg,
+    const std::string& windowArg,
     std::vector<detail::Link>* links);
 } // namespace detail
 
@@ -159,15 +184,21 @@ class RecurrentNetworkOp final : public Operator<Context> {
     CAFFE_ENFORCE(
         google::protobuf::TextFormat::ParseFromString(stepNet, &stepNetDef_),
         "Invalid netdef");
-    CAFFE_ENFORCE(
-        stepNetDef_.type() == "simple", "Step Net must be `simple`", stepNet);
 
-    recurrentInputs_ = constructRecurrentInputs(sharedWs_);
+    recurrentInputs_ = constructRecurrentInputs(operator_def, sharedWs_);
     links_ = constructLinks();
     aliases_ = constructAliases();
+
+    if (stepNetDef_.type() == "rnn") {
+      VLOG(1) << "Use RecurrentNetworkExecutor";
+      rnnExecutor_ = caffe2::make_unique<RecurrentNetworkExecutor>(stepNetDef_);
+    } else {
+      CAFFE_ENFORCE(stepNetDef_.type() != "async_dag");
+    }
   }
 
   std::vector<detail::RecurrentInput> constructRecurrentInputs(
+      const OperatorDef& operator_def,
       Workspace* sharedWs) {
     const auto states =
         OperatorBase::GetRepeatedArgument<std::string>("recurrent_states");
@@ -182,7 +213,7 @@ class RecurrentNetworkOp final : public Operator<Context> {
 
       detail::RecurrentInput ri;
       ri.state = states[i];
-      ri.input = def().input(inputs[i]);
+      ri.input = operator_def.input(inputs[i]);
       ris.push_back(ri);
     }
     return ris;
@@ -210,10 +241,31 @@ class RecurrentNetworkOp final : public Operator<Context> {
     return aliases;
   }
 
+  /**
+    * Some blobs can be marked as to be recomputed on backward pass.
+    * For those blobs, we do not want to allocate on each step workspace,
+    * but we instead store that blob in the shared workspace so all
+    * steps can use the same buffer on forward pass.
+    */
+  void initializeBlobsToRecomputeOnBackward(Workspace* sharedBlobsWs) {
+    std::vector<std::string> v;
+    const auto& blobs = OperatorBase::GetRepeatedArgument<std::string>(
+        "recompute_blobs_on_backward", v);
+    for (const auto& b : blobs) {
+      // Note: if the blob already was created, this is a no-op.
+      sharedBlobsWs->CreateBlob(b);
+    }
+  }
+
   std::vector<detail::Link> constructLinks() {
     std::vector<detail::Link> links;
     detail::extractLinks(
-        this, "link_internal", "link_external", "link_offset", &links);
+        this,
+        "link_internal",
+        "link_external",
+        "link_offset",
+        "link_window",
+        &links);
     return links;
   }
 
@@ -225,31 +277,61 @@ class RecurrentNetworkOp final : public Operator<Context> {
           ri, seqLen, batchSize, sharedWs_, &context_);
     }
 
-    std::vector<std::shared_ptr<Workspace>>* stepWorkspaces =
-        OperatorBase::Output<std::vector<std::shared_ptr<Workspace>>>(
-            OutputSize() - 1);
-    stepWorkspaces->clear();
+    // If we don't have a backward step net, this operator is forward_only
+    // and we can avoid creating multiple workspaces.
+
+    bool has_backward_pass =
+        OperatorBase::GetSingleArgument<string>("backward_step_net", "") != "";
+
+    // With backward pass: we need to create workspace for each timestep
+    detail::ScratchWorkspaces* scratch =
+        OperatorBase::Output<detail::ScratchWorkspaces>(OutputSize() - 1);
+    std::vector<std::shared_ptr<Workspace>>& stepWorkspaces =
+        scratch->stepWorkspaces;
+    std::shared_ptr<Workspace>& sharedBlobsWs = scratch->sharedBlobsWs;
+    if (!sharedBlobsWs) {
+      sharedBlobsWs = std::make_shared<Workspace>(sharedWs_);
+    }
+
+    // Caller can decide that some of the forward activations
+    // are recomputed on backward pass. Then those activations do not
+    // have to be stored in step workspaces but can be shared.
+    initializeBlobsToRecomputeOnBackward(sharedBlobsWs.get());
+
+    if (has_backward_pass && seqLen > stepWorkspaces.size()) {
+      stepWorkspaces.resize(seqLen);
+    }
+
+    if (!has_backward_pass && stepWorkspaces.size() != 2) {
+      // Use alternating stepWorkspaces when forward_only=True
+      stepWorkspaces.resize(2);
+    }
 
     for (auto t = 0; t < seqLen; ++t) {
-      stepWorkspaces->push_back(std::make_shared<Workspace>(sharedWs_));
-      auto& currentStepWorkspace = stepWorkspaces->back();
+      auto& currentStepWorkspace =
+          (has_backward_pass ? stepWorkspaces[t] : stepWorkspaces[t % 2]);
+      if (!currentStepWorkspace) {
+        currentStepWorkspace = std::make_shared<Workspace>(sharedBlobsWs.get());
+      }
 
       for (const auto& link : links_) {
         detail::applyLink<T, Context>(link, t, currentStepWorkspace.get());
       }
 
-      currentStepWorkspace->CreateBlob(timestep_)
-          ->template GetMutable<TensorCPU>()
-          ->Resize(1);
-      auto timestepBlob = currentStepWorkspace->GetBlob(timestep_);
-      CAFFE_ENFORCE(timestepBlob);
-      timestepBlob->template GetMutable<TensorCPU>()
-          ->template mutable_data<int32_t>()[0] = t;
+      detail::UpdateTimestepBlob(currentStepWorkspace.get(), timestep_, t);
 
-      NetBase* stepNet = currentStepWorkspace->CreateNet(stepNetDef_);
-      CAFFE_ENFORCE(stepNet, "Step Net construction failure");
-      // Since we have a SimpleNet, there are no races here.
-      stepNet->RunAsync();
+      if (rnnExecutor_) {
+        rnnExecutor_->RunTimestep(t, currentStepWorkspace.get());
+      } else {
+        // Use plain Caffe2 nets
+        auto* stepNet = currentStepWorkspace->GetNet(stepNetDef_.name());
+        if (stepNet == nullptr) {
+          stepNet = currentStepWorkspace->CreateNet(stepNetDef_);
+        }
+        CAFFE_ENFORCE(stepNet, "Step Net construction failure");
+        // Since we have a SimpleNet, there are no races here.
+        stepNet->RunAsync();
+      }
     }
 
     for (const auto& alias : aliases_) {
@@ -262,6 +344,8 @@ class RecurrentNetworkOp final : public Operator<Context> {
  protected:
   NetDef stepNetDef_;
   Workspace* sharedWs_;
+  std::unique_ptr<RecurrentNetworkExecutor> rnnExecutor_;
+
   std::vector<detail::Link> links_;
   std::vector<detail::OffsetAlias> aliases_;
   std::vector<detail::RecurrentInput> recurrentInputs_;
@@ -275,41 +359,90 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
   RecurrentNetworkGradientOp(const OperatorDef& operator_def, Workspace* ws)
       : Operator<Context>(operator_def, ws),
         sharedWs_(ws),
-        localWs_(ws),
         timestep_(OperatorBase::template GetSingleArgument<std::string>(
             "timestep",
             "timestep")),
         gradInputs_(OperatorBase::template GetRepeatedArgument<int32_t>(
             "outputs_with_grads")) {
-    links_ = constructLinks();
-    params_ = constructParams();
-    recurrentGradients_ = constructRecurrentGradients();
-    recurrentInputIds_ = OperatorBase::template GetRepeatedArgument<int32_t>(
-        "initial_recurrent_state_ids");
 
     CAFFE_ENFORCE(ws);
     const auto stepNet =
         OperatorBase::GetSingleArgument<string>("backward_step_net", "");
     CAFFE_ENFORCE(
         google::protobuf::TextFormat::ParseFromString(stepNet, &stepNetDef_));
+
+    links_ = constructLinks();
+    params_ = constructParams(operator_def);
+    recurrentGradients_ = constructRecurrentGradients(operator_def);
+    recurrentInputIds_ = OperatorBase::template GetRepeatedArgument<int32_t>(
+        "initial_recurrent_state_ids");
+
+    /* Add operators to the backward step net to handle accumulation of
+       gradients over timesteps
+    */
+    stepNetDef_.add_external_input(timestep_);
+    AddGradientInputAccumulationOps(operator_def);
+    AddParamGradientAccumulationOps(operator_def);
   }
 
-  std::vector<detail::Param> constructParams() {
+  // Renaming maps (generated by memonger.py)
+  std::string remappedName(std::string blob_name) {
+    return OperatorBase::template GetSingleArgument<std::string>(
+        blob_name + ".rename", blob_name);
+  }
+
+  detail::Link remappedLink(const detail::Link& link) {
+    detail::Link renamed_link = link;
+    renamed_link.internal = remappedName(link.internal);
+    renamed_link.external = remappedName(link.external);
+    return renamed_link;
+  }
+
+  void renameOpInputOutput(std::string from_name, std::string to_name) {
+    for (int j = 0; j < stepNetDef_.op_size(); j++) {
+      auto* op = stepNetDef_.mutable_op(j);
+      for (int i = 0; i < op->input_size(); i++) {
+        if (op->input(i) == from_name) {
+          op->set_input(i, to_name);
+        }
+      }
+      for (int i = 0; i < op->output_size(); i++) {
+        if (op->output(i) == from_name) {
+          op->set_output(i, to_name);
+        }
+      }
+    }
+  }
+
+  std::vector<detail::Param> constructParams(const OperatorDef& operator_def) {
     std::vector<detail::Param> params;
     const auto& param = OperatorBase::GetRepeatedArgument<int32_t>("param");
+    const auto& param_grads =
+        OperatorBase::GetRepeatedArgument<string>("param_grads");
+    CAFFE_ENFORCE(
+        param_grads.empty() || param_grads.size() == param.size(),
+        param.size(),
+        " != ",
+        param_grads.size());
     for (int i = 0; i < param.size(); ++i) {
       detail::Param p;
       // Forward inputs come after [outputs_with_grads] gradient inputs
-      p.param = def().input(param[i] + gradInputs_.size());
+      p.param = operator_def.input(param[i] + gradInputs_.size());
       // See GetRecurrentNetworkGradient to understand offseting here
-      p.grad = def().output(i + numSequences_);
-      p.accGrad = p.grad + "_acc";
+      p.grad = operator_def.output(i + numSequences_);
+
+      std::string grad_blob =
+          param_grads.empty() ? p.grad : remappedName(param_grads[i]);
+      p.cellGradient = grad_blob + "_tmpstep";
       params.push_back(p);
+
+      renameOpInputOutput(grad_blob, p.cellGradient);
     }
     return params;
   }
 
-  std::vector<detail::RecurrentGradient> constructRecurrentGradients() {
+  std::vector<detail::RecurrentGradient> constructRecurrentGradients(
+      const OperatorDef& operator_def) {
     std::vector<detail::RecurrentGradient> rgs;
     const auto& recurrent =
         OperatorBase::GetRepeatedArgument<std::string>("recurrent_states");
@@ -321,7 +454,7 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
     for (auto i = 0; i < recurrent.size(); ++i) {
       detail::RecurrentGradient rg;
       rg.param = recurrent[i];
-      rg.grad = recurrent[i] + "_grad";
+      rg.grad = remappedName(recurrent[i] + "_grad");
 
       for (int j = 0; j < alias_src.size(); ++j) {
         if (alias_src[j] != recurrent[i]) {
@@ -339,9 +472,9 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
 
         CAFFE_ENFORCE(offset[j] == 1 || offset[j] == -1);
         if (offset[j] == 1) {
-          rg.externalGrad = def().input(idx);
+          rg.externalGrad = operator_def.input(idx);
         } else if (offset[j] == -1) {
-          rg.lastExternalGrad = def().input(idx);
+          rg.lastExternalGrad = operator_def.input(idx);
         }
       }
       rg.offset = 1;
@@ -353,19 +486,109 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
   std::vector<detail::Link> constructLinks() {
     std::vector<detail::Link> links;
     detail::extractLinks(
-        this, "link_internal", "link_external", "link_offset", &links);
+        this,
+        "link_internal",
+        "link_external",
+        "link_offset",
+        "link_window",
+        &links);
     detail::extractLinks(
         this,
         "backward_link_internal",
         "backward_link_external",
         "backward_link_offset",
+        "",
         &links);
+    for (int i = 0; i < links.size(); i++) {
+      links[i] = remappedLink(links[i]);
+    }
     return links;
+  }
+
+  void prependOps(std::vector<OperatorDef> ops) {
+    for (auto& o : stepNetDef_.op()) {
+      ops.push_back(o);
+    }
+    stepNetDef_.mutable_op()->Clear();
+    for (auto& o : ops) {
+      auto* ao = stepNetDef_.add_op();
+      ao->CopyFrom(o);
+    }
+  }
+
+  void AddGradientInputAccumulationOps(const OperatorDef& operator_def) {
+    /**
+      * Add ops to the step net to accumulate input gradients.
+      */
+    std::vector<OperatorDef> ops;
+    for (const auto& rg : recurrentGradients_) {
+      if (rg.externalGrad.empty()) {
+        continue;
+      }
+      VLOG(1) << "Accumulating into: " << rg.grad << " from " << rg.externalGrad
+              << ", offset: " << rg.offset;
+
+      OperatorDef opdef;
+      opdef.set_type("rnn_internal_accumulate_gradient_input");
+      opdef.add_input(timestep_);
+      opdef.add_input(rg.externalGrad);
+      opdef.add_output(rg.grad);
+      opdef.mutable_device_option()->CopyFrom(operator_def.device_option());
+
+      Argument* offset_arg = opdef.add_arg();
+      offset_arg->set_name("offset");
+      offset_arg->set_i(rg.offset);
+      ops.push_back(opdef);
+
+      stepNetDef_.add_external_input(rg.externalGrad);
+    }
+    prependOps(ops);
+  }
+
+  void AddParamGradientAccumulationOps(const OperatorDef& operator_def) {
+    // If a user passes in param_grads mapping, we can copy dirrectly
+    // form a blob where backward cell net written data to.
+    // This becomes handy in a case where gradient from the cell net
+    // is an internal blob of the backward cell. This happens, for example,
+    // when SumOp is the first op of the cell
+    for (const auto& param : params_) {
+      OperatorDef opdef;
+      opdef.set_type("Sum");
+      opdef.add_input(param.grad);
+      opdef.add_input(param.cellGradient);
+      opdef.add_output(param.grad);
+      opdef.mutable_device_option()->CopyFrom(operator_def.device_option());
+      stepNetDef_.add_op()->CopyFrom(opdef);
+      stepNetDef_.add_external_input(param.grad);
+    }
+  }
+
+  void CreateSharedBlobs(
+      const std::shared_ptr<Workspace>& step0Ws,
+      Workspace* sharedBlobsWs) {
+    /**
+      * Create all output blobs created by ops of the backward step net, they
+      * can be shared.
+      */
+    for (auto& op : stepNetDef_.op()) {
+      for (const string& outp : op.output()) {
+        if (!step0Ws->HasBlob(outp)) {
+          sharedBlobsWs->CreateBlob(outp);
+        }
+      }
+    }
   }
 
   bool RunOnDevice() {
     const auto seqLen = Input(gradInputs_.size()).dim32(0);
     VLOG(1) << "seqLen: " << seqLen;
+
+    const detail::ScratchWorkspaces& scratch =
+        OperatorBase::Input<detail::ScratchWorkspaces>(InputSize() - 1);
+    const std::vector<std::shared_ptr<Workspace>>& stepWorkspaces =
+        scratch.stepWorkspaces;
+    CAFFE_ENFORCE_GE(stepWorkspaces.size(), seqLen);
+    Workspace& sharedBlobsWs = *scratch.sharedBlobsWs.get();
 
     const auto batchSize = Input(0).dim32(1);
     for (auto& param : params_) {
@@ -376,14 +599,9 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
       auto gBlob = sharedWs_->GetBlob(param.grad);
       CAFFE_ENFORCE(gBlob);
       auto* g = gBlob->template GetMutable<Tensor<Context>>();
-
-      auto agBlob = localWs_.CreateBlob(param.accGrad);
-      CAFFE_ENFORCE(agBlob);
-      auto* ag = agBlob->template GetMutable<Tensor<Context>>();
       g->ResizeLike(p);
-      ag->ResizeLike(p);
       math::Set<T, Context>(
-          ag->size(), 0.0, ag->template mutable_data<T>(), &context_);
+          g->size(), 0.0, g->template mutable_data<T>(), &context_);
     }
 
     for (auto& rg : recurrentGradients_) {
@@ -405,15 +623,15 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
           &context_);
     }
 
-    // This code assumes that there are several input
+    // This code assumes that there are several inputs
     // sequences. Actually it is not supported by the rest of the code,
     // and numSequences_ is a constant, equal to 1.
     for (int i = 0; i < numSequences_; ++i) {
       // Offseting as the first gradInputs_.size() inputs of the op
       // are from GO. Then all I(0..N).
       const int gradientInputIndex = i + gradInputs_.size();
-      const auto& inputName = def().input(gradientInputIndex);
-      auto gradientName = inputName + "_grad";
+      const auto& inputName = this->debug_def().input(gradientInputIndex);
+      auto gradientName = remappedName(inputName + "_grad");
       VLOG(1) << "Initializing gradient for input " << gradientInputIndex
               << " (" << inputName << ") "
               << " as blob " << gradientName
@@ -424,57 +642,6 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
       g->ResizeLike(Input(gradientInputIndex));
       g->template mutable_data<T>();
     }
-
-    auto accumulateParameterGradients = [&]() {
-      for (const auto& param : params_) {
-        auto gBlob = sharedWs_->GetBlob(param.grad);
-        CAFFE_ENFORCE(gBlob);
-        const auto& g = gBlob->template Get<Tensor<Context>>();
-
-        auto agBlob = localWs_.GetBlob(param.accGrad);
-        CAFFE_ENFORCE(agBlob);
-        auto* ag = agBlob->template GetMutable<Tensor<Context>>();
-        CAFFE_ENFORCE(ag->dims() == g.dims());
-        T* ag_data = ag->template mutable_data<T>();
-        math::Add<T, Context>(
-            g.size(),
-            g.template data<T>(),
-            ag_data,
-            ag_data,
-            &context_);
-      }
-    };
-
-    auto accumulateInputGradients = [&](int t) {
-      // Input gradients
-      for (const auto& rg : recurrentGradients_) {
-        if (rg.externalGrad.empty()) {
-          continue;
-        }
-        VLOG(1) << "Accumulating into: " << rg.grad << " from "
-                << rg.externalGrad << " at time: " << t
-                << ", offset: " << rg.offset;
-        auto gBlob = sharedWs_->GetBlob(rg.grad);
-        CAFFE_ENFORCE(gBlob);
-        auto* g = gBlob->template GetMutable<Tensor<Context>>();
-
-        auto ogBlob = sharedWs_->GetBlob(rg.externalGrad);
-        CAFFE_ENFORCE(ogBlob);
-        const auto& og = ogBlob->template Get<Tensor<Context>>();
-
-        // g[T+offset] += og[T]
-        CAFFE_ENFORCE_EQ(g->size() / g->dim(0), og.size() / og.dim(0));
-        const auto timestep_size = g->size() / g->dim(0);
-        CAFFE_ENFORCE_EQ(timestep_size, og.size() / og.dim(0));
-        T* g_data = g->template mutable_data<T>();
-        math::Add<T, Context>(
-            timestep_size,
-            og.template data<T>() + t * timestep_size,
-            g_data + (t + rg.offset) * timestep_size,
-            g_data + (t + rg.offset) * timestep_size,
-            &context_);
-      }
-    };
 
     auto accumulateFinalInputGradients = [&]() {
       for (const auto& rg : recurrentGradients_) {
@@ -507,35 +674,27 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
       }
     };
 
-    const std::vector<std::shared_ptr<Workspace>>& stepWorkspaces =
-        OperatorBase::Input<std::vector<std::shared_ptr<Workspace>>>(
-            InputSize() - 1);
-
     accumulateFinalInputGradients();
-    for (int32_t t = seqLen - 1; t >= 0; --t) {
-      accumulateInputGradients(t);
-      for (const auto& link : links_) {
-        detail::applyLink<T, Context>(link, t, stepWorkspaces[t].get());
-      }
-      NetBase* stepNet_ = stepWorkspaces[t]->CreateNet(stepNetDef_);
-      CAFFE_ENFORCE(stepNet_);
-      stepNet_->RunAsync();
-      accumulateParameterGradients();
-    }
 
-    for (const auto& param : params_) {
-      // Swap the accumulated gradients with the actual gradients so
-      // the rest of the network sees the accumulated gradients.
-      using std::swap;
-      auto accGradBlob = localWs_.GetBlob(param.accGrad);
-      auto gradBlob = sharedWs_->GetBlob(param.grad);
-      CAFFE_ENFORCE(accGradBlob);
-      CAFFE_ENFORCE(gradBlob);
-      swap(*accGradBlob, *gradBlob);
+    // Create shared blobs for blobs that can be shared between
+    // all timesteps.
+    if (stepWorkspaces.size() > 0) {
+      CreateSharedBlobs(stepWorkspaces[0], &sharedBlobsWs);
+    }
+    for (int32_t t = seqLen - 1; t >= 0; --t) {
+      for (const auto& link : links_) {
+        detail::applyLink<T, Context>(link, t, &sharedBlobsWs);
+      }
+
+      auto* stepNet = stepWorkspaces[t].get()->GetNet(stepNetDef_.name());
+      if (stepNet == nullptr) {
+        stepNet = stepWorkspaces[t].get()->CreateNet(stepNetDef_);
+      }
+      CAFFE_ENFORCE(stepNet);
+      stepNet->RunAsync();
     }
 
     CAFFE_ENFORCE_EQ(recurrentInputIds_.size(), recurrentGradients_.size());
-    // See GetRecurrentNetworkGradient to understand offseting here
     for (int i = 0; i < recurrentInputIds_.size(); ++i) {
       // See GetRecurrentNetworkGradient to understand offseting here
       // Outputs of the gradient are inputs of the forward pass.
@@ -544,8 +703,8 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
       auto outputIdx = i + params_.size() + numSequences_;
       // because first gradInputs_.size() inputs are from GO
       int inputId = recurrentInputIds_[i] + gradInputs_.size();
-      VLOG(1) << "Resetting output " << def().output(outputIdx)
-              << " like input " << def().input(inputId);
+      VLOG(1) << "Resetting output " << this->debug_def().output(outputIdx)
+              << " like input " << this->debug_def().input(inputId);
       Output(outputIdx)->ResizeLike(Input(inputId));
       T* output_data = Output(outputIdx)->template mutable_data<T>();
       auto pBlob = sharedWs_->GetBlob(recurrentGradients_[i].grad);
@@ -553,24 +712,26 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
       auto* p = pBlob->template GetMutable<Tensor<Context>>();
 
       if (Input(inputId).ndim() >= 2) {
-        context_.template Copy<T, Context, Context>(
-            Output(outputIdx)->size(),
-            p->template data<T>(),
-            output_data);
+        // Gradient states blob should live. And if it gets changed by the
+        // backward pass, then output should be changed as well. Thus it should
+        // be okay to share data here
+        Output(outputIdx)->template ShareExternalPointer<T>(
+            p->template mutable_data<T>());
       } else {
+        // We need to do a bunch of Adds any way. So lets not worry about
+        // copy / share data here. One way to speed this up could be a kernel
+        // which sums up several tensors together instead of going 1 by 1
         const auto recurrentStateSize = Input(inputId).dim32(0);
-        context_.template Copy<T, Context, Context>(
+
+        math::Set<T, Context>(recurrentStateSize, 0.0, output_data, &context_);
+
+        math::AddStripedBatch<T, Context>(
             recurrentStateSize,
             p->template data<T>(),
-            output_data);
-        for (int j = 1; j < batchSize; ++j) {
-          math::Add<T, Context>(
-              recurrentStateSize,
-              p->template data<T>() + j * recurrentStateSize,
-              output_data,
-              output_data,
-              &context_);
-        }
+            output_data,
+            recurrentStateSize,
+            batchSize,
+            &context_);
       }
     }
 
@@ -580,7 +741,6 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
  protected:
   NetDef stepNetDef_;
   Workspace* sharedWs_;
-  Workspace localWs_;
   std::vector<detail::Link> links_;
   std::vector<detail::Param> params_;
   std::vector<detail::RecurrentGradient> recurrentGradients_;
@@ -589,6 +749,45 @@ class RecurrentNetworkGradientOp final : public Operator<Context> {
   const int numSequences_{1};
   std::vector<int32_t> recurrentInputIds_;
   std::vector<int32_t> gradInputs_;
+};
+
+template <typename T, class Context>
+class AccumulateInputGradientOp : public Operator<Context> {
+ public:
+  AccumulateInputGradientOp(const OperatorDef& def, Workspace* ws)
+      : Operator<Context>(def, ws),
+        offset_(OperatorBase::GetSingleArgument<int>("offset", -1)) {
+    CAFFE_ENFORCE(offset_ >= 0, "Offset not set");
+  }
+  USE_OPERATOR_CONTEXT_FUNCTIONS;
+
+  bool RunOnDevice() override {
+    const auto t =
+        OperatorBase::Input<Tensor<CPUContext>>(0).template data<int32_t>()[0];
+    auto& og = Input(1);
+    auto* g = Output(0);
+
+    T* g_data = g->template mutable_data<T>();
+    const auto timestep_size = g->size() / g->dim(0);
+
+    CAFFE_ENFORCE(
+        (t + offset_) * timestep_size + timestep_size <= g->size(),
+        "Accumulation destination address over bounds");
+    CAFFE_ENFORCE(
+        t * timestep_size + timestep_size <= og.size(),
+        "Accumulation source address out of bounds");
+
+    math::Add<T, Context>(
+        timestep_size,
+        og.template data<T>() + t * timestep_size,
+        g_data + (t + offset_) * timestep_size,
+        g_data + (t + offset_) * timestep_size,
+        &context_);
+    return true;
+  }
+
+ private:
+  int offset_;
 };
 
 } // namespace caffe2

@@ -94,7 +94,7 @@ inline void CheckCuDNNVersions() {
   // Major, minor and patch versions must all match
   bool version_match = cudnnCompiledVersion() == cudnnRuntimeVersion();
   CAFFE_ENFORCE(version_match,
-                "cuDNN compiled (", cudnnCompiledVersion(), ") and"
+                "cuDNN compiled (", cudnnCompiledVersion(), ") and "
                 "runtime (", cudnnRuntimeVersion(), ") versions mismatch");
 }
 
@@ -111,6 +111,7 @@ class cudnnTypeWrapper<float> {
  public:
   static const cudnnDataType_t type = CUDNN_DATA_FLOAT;
   typedef const float ScalingParamType;
+  typedef float BNParamType;
   static ScalingParamType* kOne() {
     static ScalingParamType v = 1.0;
     return &v;
@@ -126,6 +127,7 @@ class cudnnTypeWrapper<double> {
  public:
   static const cudnnDataType_t type = CUDNN_DATA_DOUBLE;
   typedef const double ScalingParamType;
+  typedef double BNParamType;
   static ScalingParamType* kOne() {
     static ScalingParamType v = 1.0;
     return &v;
@@ -141,6 +143,7 @@ class cudnnTypeWrapper<float16> {
  public:
   static const cudnnDataType_t type = CUDNN_DATA_HALF;
   typedef const float ScalingParamType;
+  typedef float BNParamType;
   static ScalingParamType* kOne() {
     static ScalingParamType v = 1.0;
     return &v;
@@ -316,31 +319,26 @@ class CuDNNHandles {
  * not need more than one cudnn workspace per device.
  */
 struct CuDNNWorkspace {
-  ~CuDNNWorkspace() noexcept {
-    if (data_) {
-      CUDAContext::Delete(data_);
-    }
-  }
+  ~CuDNNWorkspace() noexcept {}
 
   void* get(size_t nbytes) {
     if (nbytes_ < nbytes) {
       reset();
-      data_ = CUDAContext::New(nbytes);
+      auto data_and_deleter = CUDAContext::New(nbytes);
+      data_ = {data_and_deleter.first, std::move(data_and_deleter.second)};
       nbytes_ = nbytes;
     }
     CAFFE_ENFORCE_GE(nbytes_, nbytes);
-    return data_;
+    return data_.get();
   }
 
   void reset() {
-    if (data_) {
-      CUDAContext::Delete(data_);
-    }
     data_ = nullptr;
     nbytes_ = 0;
   }
 
-  void* data_{nullptr};
+ private:
+  std::unique_ptr<void, MemoryDeleter> data_{nullptr};
   size_t nbytes_{0};
 };
 

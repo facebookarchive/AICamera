@@ -2,13 +2,13 @@
 #include <string>
 #include <algorithm>
 #define PROTOBUF_USE_DLLS 1
+#define CAFFE2_USE_LITE_PROTO 1
 #include <caffe2/core/predictor.h>
 #include <caffe2/core/operator.h>
 #include <caffe2/core/timer.h>
 
 #include "caffe2/core/init.h"
 
-//#include <caffe2/utils/proto_utils.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/log.h>

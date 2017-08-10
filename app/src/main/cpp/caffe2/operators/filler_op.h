@@ -40,6 +40,10 @@ class FillerOp : public Operator<Context> {
       if (input_as_shape_) {
         CAFFE_THROW("An input must be given if input_as_shape is true");
       }
+      if (shape_.size() == 0 &&
+          OperatorBase::HasSingleArgumentOfType<int>("shape")) {
+        CAFFE_THROW("Fill 'shape' argument was a scalar, list expected");
+      }
     }
   }
 
@@ -49,9 +53,10 @@ class FillerOp : public Operator<Context> {
   bool RunOnDevice() override {
     auto* output = Operator<Context>::Output(0);
     if (InputSize()) {
-      auto& input = Input(0);
       auto shape = vector<TIndex>{};
       if (input_as_shape_) {
+        // Shape input must be in CPU context
+        auto& input = OperatorBase::Input<Tensor<CPUContext>>(0);
         CAFFE_ENFORCE_EQ(
             input.ndim(),
             1,
@@ -60,6 +65,7 @@ class FillerOp : public Operator<Context> {
         auto* shape_data = input.template data<TIndex>();
         shape.insert(shape.end(), shape_data, shape_data + input.dim32(0));
       } else {
+        auto& input = Input(0);
         shape.insert(shape.end(), input.dims().begin(), input.dims().end());
       }
       shape.insert(shape.end(), extra_shape_.begin(), extra_shape_.end());
@@ -86,14 +92,39 @@ class UniformFillOp final : public FillerOp<Context> {
       : FillerOp<Context>(operator_def, ws),
         min_(OperatorBase::template GetSingleArgument<T>("min", 0)),
         max_(OperatorBase::template GetSingleArgument<T>("max", 1)) {
-    DCHECK_LT(min_, max_) << "Max value should be bigger than min value.";
+    if (InputSize() == 3) {
+      CAFFE_ENFORCE(
+          !OperatorBase::HasSingleArgumentOfType<T>("min"),
+          "Cannot set both min arg and min input blob");
+      CAFFE_ENFORCE(
+          !OperatorBase::HasSingleArgumentOfType<T>("max"),
+          "Cannot set both max arg and max input blob");
+    } else {
+      CAFFE_ENFORCE_LT(
+          min_, max_, "Max value should be bigger than min value.");
+    }
   }
 
   bool Fill(Tensor<Context>* output) override {
+    T min = min_;
+    T max = max_;
+    if (InputSize() == 3) {
+      CAFFE_ENFORCE_EQ(1, Input(1).size(), "min blob must be scalar");
+      CAFFE_ENFORCE_EQ(1, Input(2).size(), "max blob must be scalar");
+      min = *Input(1).template data<T>();
+      max = *Input(2).template data<T>();
+      if (min > max) {
+        auto shape = output->dims();
+        shape[0] = 0;
+        output->Resize(shape);
+        output->template mutable_data<T>();
+        return true;
+      }
+    }
     math::RandUniform<T, Context>(
         output->size(),
-        min_,
-        max_,
+        min,
+        max,
         output->template mutable_data<T>(),
         &context_);
     return true;
