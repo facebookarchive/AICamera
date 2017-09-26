@@ -31,8 +31,8 @@ class SplitOp final : public Operator<Context> {
       : Operator<Context>(operator_def, ws),
         split_(OperatorBase::GetRepeatedArgument<int>("split")) {
     CAFFE_ENFORCE(
-        OperatorBase::HasArgument("axis") ^ OperatorBase::HasArgument("order"),
-        "You should either specify the dim to split, or the order "
+      !(OperatorBase::HasArgument("axis") && OperatorBase::HasArgument("order")),
+        "You shouldn't specify both the dim to split, and the order "
         "in the case of 4-D images.");
     if (OperatorBase::HasArgument("axis")) {
       axis_ = OperatorBase::GetSingleArgument<int>("axis", -1);
@@ -40,7 +40,7 @@ class SplitOp final : public Operator<Context> {
       add_axis_ = OperatorBase::GetSingleArgument<int>("add_axis", 0);
     } else {
       axis_ = GetDimFromOrderString(
-          OperatorBase::GetSingleArgument<string>("order", ""));
+          OperatorBase::GetSingleArgument<string>("order", "NCHW"));
       add_axis_ = 0;
     }
     CAFFE_ENFORCE_GE(axis_, 0);
@@ -63,15 +63,15 @@ class ConcatOp final : public Operator<Context> {
   ConcatOp(const OperatorDef& operator_def, Workspace* ws)
       : Operator<Context>(operator_def, ws) {
     CAFFE_ENFORCE(
-        OperatorBase::HasArgument("axis") ^ OperatorBase::HasArgument("order"),
-        "You should either specify the dim to split, or the order "
+      !(OperatorBase::HasArgument("axis") && OperatorBase::HasArgument("order")),
+        "You shouldn't specify both the dim to concat, and the order "
         "in the case of 4-D images.");
     if (OperatorBase::HasArgument("axis")) {
       axis_ = OperatorBase::GetSingleArgument<int>("axis", -1);
       add_axis_ = OperatorBase::GetSingleArgument<int>("add_axis", 0);
     } else {
       axis_ = GetDimFromOrderString(
-          OperatorBase::GetSingleArgument<string>("order", ""));
+          OperatorBase::GetSingleArgument<string>("order", "NCHW"));
       add_axis_ = 0;
     }
     CAFFE_ENFORCE_GE(axis_, 0);
@@ -128,7 +128,6 @@ bool SplitOp<Context>::RunOnDevice() {
       input_channels,
       "Sum of split dimensions do not match: should be ",
       input_channels);
-  int input_offset = 0;
   vector<TIndex> output_dims(input.dims());
   int before = 1, after = 1;
   for (int i = 0; i < axis_; ++i) {
@@ -140,6 +139,7 @@ bool SplitOp<Context>::RunOnDevice() {
   if (add_axis_) {
     output_dims.erase(output_dims.begin() + axis_);
   }
+  size_t input_offset = 0;
   for (int i = 0; i < OutputSize(); ++i) {
     auto* output = Output(i);
     auto axis_dim = add_axis_ ? 1 : axis_data[i];
@@ -168,7 +168,10 @@ bool ConcatOp<Context>::RunOnDevice() {
   split->Resize(vector<TIndex>(1, InputSize()));
   int* axis_data = split->template mutable_data<int>();
   auto& input_zero = Input(0);
-  CAFFE_ENFORCE_LT(axis_, input_zero.ndim(), "Axis not in input ndim range.");
+  CAFFE_ENFORCE_LT(
+      axis_,
+      input_zero.ndim() + (add_axis_ ? 1 : 0),
+      "Axis not in input ndim range.");
   for (int i = 1; i < InputSize(); ++i) {
     CAFFE_ENFORCE(
         Input(i).meta() == input_zero.meta(),
@@ -227,7 +230,7 @@ bool ConcatOp<Context>::RunOnDevice() {
     output_dims[axis_] = output_channels;
   }
   output->Resize(output_dims);
-  int output_offset = 0;
+  size_t output_offset = 0;
   for (int i = 0; i < InputSize(); ++i) {
     auto& input = Input(i);
     auto axis_dim = add_axis_ ? 1 : input.dim32(axis_);

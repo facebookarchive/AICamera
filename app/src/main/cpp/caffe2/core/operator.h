@@ -100,12 +100,29 @@ class OperatorBase {
   inline int OutputSize() { return outputs_.size(); }
   inline const vector<const Blob*>& Inputs() const { return inputs_; }
   inline const vector<Blob*>& Outputs() { return outputs_; }
+  vector<TensorShape> InputTensorShapes();
+
+  virtual void WaitEvent(const Event& ev) {
+    CAFFE_NOT_IMPLEMENTED;
+  }
+
+  inline void Wait(const OperatorBase& other) {
+    WaitEvent(other.event());
+  }
+
+  virtual void Record() {
+    CAFFE_NOT_IMPLEMENTED;
+  }
 
   virtual bool Run(int /* unused */ /*stream_id*/ = 0) {
     CAFFE_NOT_IMPLEMENTED;
   }
 
-  virtual bool RunAsync(int /* unused */ stream_id = 0) {
+  // RunAsync, if implemenented by the specific operators, will schedule the
+  // computation on the corresponding context and record the event in its
+  // event_ member object. If the specific operator does not support RunAsync,
+  // it will simply be synchronous as a fallback.
+  virtual bool RunAsync(int stream_id = 0) {
     return Run(stream_id);
   }
 
@@ -181,6 +198,15 @@ class OperatorBase {
     return device_option_;
   }
 
+  const Event& event() const {
+    return event_;
+  }
+
+  const std::string& type() {
+    CAFFE_ENFORCE(operator_def_.get() != nullptr);
+    return operator_def_->type();
+  }
+
  public:
   static constexpr int kNoNetPositionSet = -1;
 
@@ -188,17 +214,23 @@ class OperatorBase {
     return observer_.get();
   }
 
- protected:
-  Workspace* operator_ws_;
-  std::unique_ptr<ObserverBase<OperatorBase>> observer_;
+  const ObserverBase<OperatorBase>* GetObserver() const {
+    return observer_.get();
+  }
 
  private:
+  Workspace* operator_ws_;
   std::shared_ptr<const OperatorDef> operator_def_;
   DeviceOption device_option_;
   vector<const Blob*> inputs_;
   vector<Blob*> outputs_;
 
   int net_position_{kNoNetPositionSet};
+
+ protected:
+  std::unique_ptr<ObserverBase<OperatorBase>> observer_;
+  // An event used by asynchronous execution.
+  Event event_;
 
   DISABLE_COPY_AND_ASSIGN(OperatorBase);
 };
@@ -252,6 +284,16 @@ class Operator : public OperatorBase {
     return OperatorBase::template Output<Tensor<Context>>(idx);
   }
 
+  void WaitEvent(const Event& ev) final {
+    context_.SwitchToDevice();
+    context_.WaitEvent(ev);
+  }
+
+  void Record() final {
+    context_.SwitchToDevice();
+    context_.Record(&event_);
+  }
+
   // The run function of Operator switches to the device, and then carries out
   // the actual computation with RunOnDevice(). You should implement RunOnDevice
   // instead of Run().
@@ -261,26 +303,15 @@ class Operator : public OperatorBase {
         observer_->Start();
       }
       context_.SwitchToDevice(stream_id);
-      bool started = RunOnDevice();
-      bool finished = context_.FinishDeviceComputation();
-      auto result = started && finished;
+      bool result = RunOnDevice();
       if (!result) {
         this->RecordLastFailedOpNetPosition();
       }
-      if (!finished) {
-        // FinishDeviceComputation() returning error basically means that there
-        // is something wrong with the device (like CUDA) that usually cannot be
-        // recovered, so we should log FATAL.
-        if (has_debug_def()) {
-          LOG(FATAL) << "Computation on device returned error in operator\n"
-                     << ProtoDebugString(this->debug_def());
-        } else {
-          LOG(FATAL) << "Computation on device returned error in operator";
-        }
-      }
+      context_.FinishDeviceComputation(); // throws on error
       if (observer_) {
         observer_->Stop();
       }
+
       return result;
     } catch (EnforceNotMet& err) {
       if (has_debug_def()) {
@@ -303,6 +334,7 @@ class Operator : public OperatorBase {
       if (!result) {
         this->RecordLastFailedOpNetPosition();
       }
+      context_.Record(&event_);
       return result;
     } catch (EnforceNotMet& err) {
       if (has_debug_def()) {
@@ -623,6 +655,23 @@ unique_ptr<OperatorBase> CreateOperator(
     const OperatorDef& operator_def,
     Workspace* ws,
     int net_position = OperatorBase::kNoNetPositionSet);
+
+// User can set the preferred engines as a list of engine names, in
+// descending order of preference.
+using EnginePrefType = std::vector<std::string>;
+// {device_type -> {operator_name -> EnginePrefType}}
+using PerOpEnginePrefType =
+    CaffeMap<int, CaffeMap<std::string, EnginePrefType>>;
+// {device_type -> EnginePrefType}
+using GlobalEnginePrefType = CaffeMap<int, EnginePrefType>;
+void SetPerOpEnginePref(const PerOpEnginePrefType& per_op_engine_pref);
+void SetGlobalEnginePref(const GlobalEnginePrefType& global_engine_pref);
+void SetEnginePref(
+    const PerOpEnginePrefType& per_op_engine_pref,
+    const GlobalEnginePrefType& global_engine_pref);
+void SetOpEnginePref(
+    const std::string& op_type,
+    const CaffeMap<int, EnginePrefType>& op_pref);
 
 TensorShapes InferBlobShapesAndTypesFromWorkspace(
     Workspace* ws,

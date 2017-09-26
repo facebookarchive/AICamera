@@ -19,7 +19,7 @@ class LRNOpBase : public Operator<Context> {
         beta_(OperatorBase::GetSingleArgument<float>("beta", 0)),
         bias_(OperatorBase::GetSingleArgument<float>("bias", 1)),
         order_(StringToStorageOrder(
-            OperatorBase::GetSingleArgument<string>("order", "NHWC"))),
+            OperatorBase::GetSingleArgument<string>("order", "NCHW"))),
         pre_pad_((size_ - 1) / 2) {
     DCHECK_GT(size_, 0);
     DCHECK_EQ(size_ % 2, 1);
@@ -66,6 +66,8 @@ class LRNOp final : public LRNOpBase<T, Context> {
  protected:
   // Input: X; Output: Y, scale.
   OUTPUT_TAGS(OUTPUT, SCALE);
+  Tensor<Context>* scale_ = nullptr;
+  Tensor<Context> local_scale_tensor_;
 };
 
 template <typename T, class Context>
@@ -81,6 +83,8 @@ class LRNGradientOp final : public LRNOpBase<T, Context> {
  protected:
   // Input: X, Y, scale, dY; Output: dX
   INPUT_TAGS(INPUT, OUTPUT, SCALE, OUTPUT_GRAD);
+  Tensor<Context>* scale_ = nullptr;
+  Tensor<Context> local_scale_tensor_;
 };
 
 } // namespace caffe2

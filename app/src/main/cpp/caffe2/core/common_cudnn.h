@@ -325,7 +325,7 @@ struct CuDNNWorkspace {
     if (nbytes_ < nbytes) {
       reset();
       auto data_and_deleter = CUDAContext::New(nbytes);
-      data_ = {data_and_deleter.first, std::move(data_and_deleter.second)};
+      data_ = {data_and_deleter.first, data_and_deleter.second};
       nbytes_ = nbytes;
     }
     CAFFE_ENFORCE_GE(nbytes_, nbytes);
@@ -338,7 +338,7 @@ struct CuDNNWorkspace {
   }
 
  private:
-  std::unique_ptr<void, MemoryDeleter> data_{nullptr};
+  std::unique_ptr<void, MemoryDeleter> data_{nullptr, NoDelete};
   size_t nbytes_{0};
 };
 
@@ -416,13 +416,11 @@ class CuDNNWrapper {
   cudnnHandle_t& inline_cudnn_handle() {
     int gpu_id = context_->cuda_gpu_id();
     auto& cudnn_handle_ = tls_cudnn_handles_.cudnn_handle_[gpu_id];
-    if (cudnn_handle_) {
-      return cudnn_handle_;
-    } else {
+    if (!cudnn_handle_) {
       context_->SwitchToDevice();
       CUDNN_ENFORCE(cudnnCreate(&cudnn_handle_));
-      CUDNN_ENFORCE(cudnnSetStream(cudnn_handle_, context_->cuda_stream()));
     }
+    CUDNN_ENFORCE(cudnnSetStream(cudnn_handle_, context_->cuda_stream()));
     return cudnn_handle_;
   }
 

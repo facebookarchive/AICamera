@@ -1,14 +1,14 @@
 #ifndef CAFFE2_UTILS_PROTO_UTILS_H_
 #define CAFFE2_UTILS_PROTO_UTILS_H_
 
-#include "google/protobuf/message_lite.h"
-#ifndef CAFFE2_USE_LITE_PROTO
-#include "google/protobuf/message.h"
+#ifdef CAFFE2_USE_LITE_PROTO
+#include <google/protobuf/message_lite.h>
+#else // CAFFE2_USE_LITE_PROTO
+#include <google/protobuf/message.h>
 #endif  // !CAFFE2_USE_LITE_PROTO
 
 #include "caffe2/core/logging.h"
 #include "caffe2/proto/caffe2.pb.h"
-#include "caffe2/proto/predictor_consts.pb.h"
 
 namespace caffe2 {
 
@@ -23,6 +23,9 @@ using ::google::protobuf::MessageLite;
 // protobuf-full, and some platforms (like mobile) may want to use
 // protobuf-lite instead.
 std::string DeviceTypeName(const int32_t& d);
+
+// Returns if the two DeviceOptions are pointing to the same device.
+bool IsSameDevice(const DeviceOption& lhs, const DeviceOption& rhs);
 
 // Common interfaces that reads file contents into a string.
 bool ReadStringFromFile(const char* filename, string* str);
@@ -164,6 +167,9 @@ inline OperatorDef CreateOperatorDef(
       device_option,
       engine);
 }
+
+bool HasOutput(const OperatorDef& op, const std::string& output);
+bool HasInput(const OperatorDef& op, const std::string& input);
 
 /**
  * @brief A helper class to index into arguments.
