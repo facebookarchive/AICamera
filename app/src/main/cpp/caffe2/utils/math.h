@@ -131,6 +131,21 @@ CAFFE2_DECLARE_BINARY_OP(Div);
 
 #undef CAFFE2_DECLARE_BINARY_OP
 
+template <typename T, class Context>
+void ReduceMin(
+    const int N,
+    const T* x,
+    T* y,
+    Tensor<Context>* scratch_ptr,
+    Context* context);
+template <typename T, class Context>
+void ReduceMax(
+    const int N,
+    const T* x,
+    T* y,
+    Tensor<Context>* scratch_ptr,
+    Context* context);
+
 // Adds batch sub-tensors elementwise to output. Stripe is the stripe length
 // and N is the number of elements to add (size of Y).
 template <typename T, class Context>
@@ -153,6 +168,10 @@ void RowwiseMax(const int N, const int D, const T* x, T* y,
 template <typename T, class Context>
 void ColwiseMax(const int N, const int D, const T* x, T* y,
                 Context* context);
+
+// Elemwise maximum of vector x and vector y. z[i] = max(x[i], y[i])
+template <typename T, class Context>
+void ElemwiseMax(const int N, const T* x, const T* y, T* z, Context* context);
 
 // Elemwise maximum of vector x and scalar alpha. y[i] = max(x[i], alpha)
 template <typename T, class Context>
@@ -198,6 +217,27 @@ void GemmEx(
     T* C,
     const int ldc,
     Context* context);
+
+// GemmBatched provides a simple abstraction into library routines
+template <typename T, class Context, class Engine = DefaultEngine>
+void GemmBatched(
+    const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB,
+    const int A_size,
+    const int A_batches,
+    const int B_size,
+    const int B_batches,
+    const int M,
+    const int N,
+    const int K,
+    const float alpha,
+    const T* A,
+    const T* B,
+    const float beta,
+    T* C,
+    Context* context,
+    Tensor<Context>* scratch = nullptr,
+    TensorProto::DataType math_type = TensorProto_DataType_FLOAT);
 
 // Gemv always takes in a M*N matrix A, and depending on whether we set TransA
 // to Trans, the output is:
@@ -375,6 +415,8 @@ template <class Context>
 void CopyMatrix(const size_t item_size, const int M, const int N, const void* A,
                 const int lda, void* B, const int ldb, Context* context);
 
+template <typename T, class Context>
+void CopyVector(const int N, const T* A, T* B, Context* context);
 
 uint32_t randomNumberSeed();
 
@@ -406,10 +448,17 @@ constexpr T roundUp(T a, T b) {
 }
 
 // Returns true if the given integer type is a power-of-2 (positive only)
+// Note(jiayq): windows reported an error per
+//     https://github.com/caffe2/caffe2/issues/997
+// and as a result will make it a macro.
+#ifdef _MSC_VER
+#define integerIsPowerOf2(v) ((v) && !((v) & ((v) - 1)))
+#else // _MSC_VER
 template <typename T>
 constexpr bool integerIsPowerOf2(T v) {
   return (v && !(v & (v - 1)));
 }
+#endif // _MSC_VER
 
 // Returns log2(n) for a positive integer type
 template <typename T>

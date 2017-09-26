@@ -1,6 +1,6 @@
 #pragma once
 
-#include "caffe2/core/net.h"
+#include "caffe2/core/net_dag.h"
 #include "caffe2/proto/prof_dag.pb.h"
 
 namespace caffe2 {
@@ -8,6 +8,7 @@ namespace caffe2 {
 struct Stats {
   float sum;
   float sqrsum;
+  size_t cnt;
 };
 
 /**
@@ -21,7 +22,10 @@ class ProfDAGNet : public DAGNetBase {
  public:
   ProfDAGNet(const std::shared_ptr<const NetDef>& net_def, Workspace* ws);
   ~ProfDAGNet();
-  bool Run() override;
+  bool SupportsAsync() override {
+    return false;
+  }
+  bool RunAsync() override;
   ProfDAGProtos GetOperatorStats();
 
  protected:

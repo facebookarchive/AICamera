@@ -21,7 +21,14 @@ class SumElementsOp : public Operator<Context> {
       : Operator<Context>(operator_def, ws), average_(average) {}
   ~SumElementsOp() {}
 
-  bool RunOnDevice() override {
+  bool RunOnDevice() override
+// TODO: T21635002 fix float-divide-by-zero undefined behavior
+#if defined(__has_feature)
+#if __has_feature(__address_sanitizer__)
+      __attribute__((__no_sanitize__("float-divide-by-zero")))
+#endif
+#endif
+  {
     auto& X = Input(0);
     auto* sum = Output(0);
     sum->Resize(vector<TIndex>());
@@ -65,13 +72,18 @@ class SumElementsGradientOp : public Operator<Context> {
   bool average_;
 };
 
-template <typename T, class Context>
+template <class Context>
 class SumSqrElementsOp : public Operator<Context> {
  public:
   USE_SIMPLE_CTOR_DTOR(SumSqrElementsOp)
   USE_OPERATOR_CONTEXT_FUNCTIONS;
 
   bool RunOnDevice() override {
+    return DispatchHelper<TensorTypes<float>>::call(this, Input(0));
+  }
+
+  template <typename T>
+  bool DoRunWithType() {
     bool average = OperatorBase::GetSingleArgument<bool>("average", false);
     auto& X = Input(0);
     auto* sum = Output(0);
@@ -85,7 +97,7 @@ class SumSqrElementsOp : public Operator<Context> {
     if (average) {
       math::Scale<T, Context>(
           1,
-          static_cast<T>(1.) / X.size(),
+          float(1.) / X.size(),
           sum->template data<T>(),
           sum->template mutable_data<T>(),
           &context_);
