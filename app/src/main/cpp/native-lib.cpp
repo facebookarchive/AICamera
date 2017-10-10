@@ -51,6 +51,7 @@ Java_facebook_f8demo_ClassifyCamera_initCaffe2(
     loadToNetDef(mgr, &_predictNet,"squeeze_predict_net.pb");
     alog("done.");
     alog("Instantiating predictor...");
+    //ws.CreateBlob("1");
     _predictor = new caffe2::Predictor(_initNet, _predictNet);
     alog("done.")
 }
@@ -173,7 +174,7 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
     stringStream << avg_fps << " FPS\n";
 
     for (auto j = 0; j < k; ++j) {
-        stringStream << j << ": " << imagenet_classes[max_index[j]] << " - " << max[j] * 100 << "%\n";
+        stringStream << j << ": " << imagenet_classes[max_index[j]] << " - " << max[j] / 10 << "%\n";
     }
     return env->NewStringUTF(stringStream.str().c_str());
 }
