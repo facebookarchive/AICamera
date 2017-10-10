@@ -3,7 +3,9 @@
 /local.properties
 /.idea/workspace.xml
 /.idea/libraries
+.idea/modules.xml
 .DS_Store
 /build
 /captures
 .externalNativeBuild
+.ipynb_checkpoints/
