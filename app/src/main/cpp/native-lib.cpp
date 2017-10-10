@@ -51,7 +51,6 @@ Java_facebook_f8demo_ClassifyCamera_initCaffe2(
     loadToNetDef(mgr, &_predictNet,"squeeze_predict_net.pb");
     alog("done.");
     alog("Instantiating predictor...");
-    //ws.CreateBlob("1");
     _predictor = new caffe2::Predictor(_initNet, _predictNet);
     alog("done.")
 }
