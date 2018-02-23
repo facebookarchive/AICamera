@@ -38,6 +38,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.os.Environment;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -47,6 +48,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static android.os.Environment.getExternalStorageDirectory;
 import static android.view.View.SYSTEM_UI_FLAG_IMMERSIVE;
 
 public class ClassifyCamera extends AppCompatActivity {
@@ -215,6 +217,7 @@ public class ClassifyCamera extends AppCompatActivity {
                         processing = true;
                         int w = image.getWidth();
                         int h = image.getHeight();
+                        Log.d("classifyCamera", String.valueOf(w));
                         ByteBuffer Ybuffer = image.getPlanes()[0].getBuffer();
                         ByteBuffer Ubuffer = image.getPlanes()[1].getBuffer();
                         ByteBuffer Vbuffer = image.getPlanes()[2].getBuffer();
@@ -227,6 +230,13 @@ public class ClassifyCamera extends AppCompatActivity {
                         Ybuffer.get(Y);
                         Ubuffer.get(U);
                         Vbuffer.get(V);
+
+                        /*Log.i("codecraeer", "getFilesDir = " + getFilesDir());
+                        Log.i("codecraeer", "getExternalFilesDir = " + getExternalFilesDir("exter_test").getAbsolutePath());
+                        Log.i("codecraeer", "getDownloadCacheDirectory = " + Environment.getDownloadCacheDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getDataDirectory = " + Environment.getDataDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getExternalStorageDirectory = " + Environment.getExternalStorageDirectory().getAbsolutePath());
+                        Log.i("codecraeer", "getExternalStoragePublicDirectory = " + Environment.getExternalStoragePublicDirectory("pub_test"));*/
 
                         predictedClass = classificationFromCaffe2(h, w, Y, U, V,
                                 rowStride, pixelStride, run_HWC);
