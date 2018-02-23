@@ -6,7 +6,7 @@ AICamera is a demo app that was displayed at Facebook's F8 event.  The previous 
 
 ### Download
 
-    git clone https://github.com/bwasti/AICamera.git
+    git clone https://github.com/caffe2/AICamera.git
 
 ### Build
 
@@ -18,3 +18,7 @@ Click the green play button in Android Studio 2.2 and everything should build :)
 | ------------------ | ------------- | ----- |
 | Samsung Galaxy S7  | SqueezeNet    |  5.8  |
 | Google Pixel       | SqueezeNet    |  5.7  |
+
+### License
+
+Please see the LICENSE file in the root directory the source tree.
