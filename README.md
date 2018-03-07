@@ -10,7 +10,7 @@ AICamera is a demo app that was displayed at Facebook's F8 event.  The previous 
 
 ### Build
 
-Click the green play button in Android Studio 2.2 and everything should build :)
+Click the green play button in Android Studio 3.0.1 and everything should build :)
 
 ### Tests
 
