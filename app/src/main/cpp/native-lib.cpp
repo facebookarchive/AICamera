@@ -97,8 +97,8 @@ Java_facebook_f8demo_ClassifyCamera_classificationFromCaffe2(
 
     for (auto i = 0; i < iter_h; ++i) {
         jbyte* Y_row = &Y_data[(h_offset + i) * w];
-        jbyte* U_row = &U_data[(h_offset + i) / 4 * rowStride];
-        jbyte* V_row = &V_data[(h_offset + i) / 4 * rowStride];
+        jbyte* U_row = &U_data[(h_offset + i) / 2 * rowStride];
+        jbyte* V_row = &V_data[(h_offset + i) / 2 * rowStride];
         for (auto j = 0; j < iter_w; ++j) {
             // Tested on Pixel and S7.
             char y = Y_row[w_offset + j];
