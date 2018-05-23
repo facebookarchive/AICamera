@@ -1,0 +1,3 @@
+[submodule "app/src/main/cpp/pytorch"]
+	path = app/src/main/cpp/pytorch
+	url = https://github.com/pytorch/pytorch.git
