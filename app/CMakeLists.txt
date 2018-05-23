@@ -1,87 +1,52 @@
 cmake_minimum_required(VERSION 3.4.1)
 
 add_library(
-             native-lib
-             SHARED
-             src/main/cpp/native-lib.cpp
-             )
+    native-lib
+    SHARED
+    src/main/cpp/native-lib.cpp
+)
 find_library(
-          android-lib
-          android
-          )
-
-include(AndroidNdkModules)
-android_ndk_import_module_cpufeatures()
-
-add_library(
-    caffe2
-    STATIC
-    IMPORTED
-    )
-set_target_properties(
-    caffe2
-    PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_LIST_DIR}/src/main/jniLibs/${ANDROID_ABI}/libCaffe2_CPU.a
-    )
-add_library(
-    thread_pool
-    STATIC
-    IMPORTED
-    )
-set_target_properties(
-    thread_pool
-    PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_LIST_DIR}/src/main/jniLibs/${ANDROID_ABI}/libCAFFE2_PTHREADPOOL.a
-    )
-add_library(
-    glog
-    SHARED
-    IMPORTED
-    )
-set_target_properties(
-    glog
-    PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_LIST_DIR}/src/main/jniLibs/${ANDROID_ABI}/libglog.so
-    )
-
-add_library(
-    protobuf
-    SHARED
-    IMPORTED
-    )
-set_target_properties(
-    protobuf
-    PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_LIST_DIR}/src/main/jniLibs/${ANDROID_ABI}/libprotobuf.a
-    )
-
-add_library(
-    NNPACK
-    STATIC
-    IMPORTED
-    )
-set_target_properties(
-    NNPACK
-    PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_LIST_DIR}/src/main/jniLibs/${ANDROID_ABI}/libCAFFE2_NNPACK.a
-    )
+    android-lib
+    android
+)
 
 include_directories( src/main/cpp )
 
+set(PYTORCH_PATH src/main/cpp/pytorch)
+execute_process(
+    COMMAND bash scripts/build_host_protoc.sh
+    WORKING_DIRECTORY ${PYTORCH_PATH}
+    RESULT_VARIABLE build_host_protoc_result
+)
+if (NOT build_host_protoc_result EQUAL 0)
+    message(FATAL_ERROR "Cannot build host protoc. ${build_host_protoc_result}")
+endif()
+get_filename_component(CAFFE2_CUSTOM_PROTOC_EXECUTABLE ${PYTORCH_PATH}/build_host_protoc/bin/protoc ABSOLUTE)
+set(BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(BUILD_BINARY OFF CACHE BOOL "" FORCE)
+set(BUILD_PYTHON OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(USE_CUDA OFF CACHE BOOL "" FORCE)
+set(USE_GFLAGS OFF CACHE BOOL "" FORCE)
+set(USE_OPENCV OFF CACHE BOOL "" FORCE)
+set(USE_LMDB OFF CACHE BOOL "" FORCE)
+set(USE_LEVELDB OFF CACHE BOOL "" FORCE)
+set(USE_MPI OFF CACHE BOOL "" FORCE)
+set(USE_OPENMP OFF CACHE BOOL "" FORCE)
+set(USE_MOBILE_OPENGL OFF CACHE BOOL "" FORCE)
+add_subdirectory( ${PYTORCH_PATH} )
+include_directories( $<TARGET_PROPERTY:caffe2,INCLUDE_DIRECTORIES> )
+
 find_library(
-     log-lib
-     log
-     )
+    log-lib
+    log
+)
 
 target_link_libraries(
-                       native-lib
-                       -Wl,--whole-archive
-                       caffe2
-                       -Wl,--no-whole-archive
-                       NNPACK
-                       thread_pool
-                       glog
-                       protobuf
-                       cpufeatures
-                       ${log-lib}
-                       ${android-lib})
+    native-lib
+    -Wl,--whole-archive
+    caffe2
+    -Wl,--no-whole-archive
+    ${log-lib}
+    ${android-lib}
+)
