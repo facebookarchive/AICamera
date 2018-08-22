@@ -12,6 +12,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-frtti -fexceptions -std=c++11"
+                arguments "-DANDROID_STL=gnustl_shared"
             }
         }
         ndk {
@@ -30,6 +31,9 @@ android {
         cmake {
             path "CMakeLists.txt"
         }
+    }
+    packagingOptions {
+        pickFirst 'lib/armeabi-v7a/libgnustl_shared.so'
     }
 
 }
